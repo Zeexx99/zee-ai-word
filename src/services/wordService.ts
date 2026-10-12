@@ -8,7 +8,9 @@
  * reloads, leftover hidden controls are unwrapped (their text stays) so documents never accumulate
  * Zee AI markers.
  */
-import { markdownToHtml, markdownToPlain } from "../utils/mdToHtml";
+import { markdownToHtml, markdownToPlain, plainToHtml } from "../utils/mdToHtml";
+import { alignmentFor, detectDirection, hasRtl } from "../utils/direction";
+import { loadSettings } from "./settingsService";
 import { normalizeWordText } from "../utils/text";
 import { countOccurrences, escapeWordSearch, planEdits, MAX_SEARCH } from "../utils/edits";
 
@@ -409,6 +411,8 @@ export interface InsertRequest {
   preserveFormatting?: boolean;
   /** Record the change as Word revisions (Track Changes). */
   trackChanges?: boolean;
+  /** Arabic right-to-left + right-aligned, English left-aligned, headings centred. Default: the setting. */
+  autoDirection?: boolean;
 }
 
 export interface InsertResult {
@@ -432,6 +436,53 @@ function wrap(target: Word.Range | Word.Paragraph, id: string): boolean {
   } catch {
     return false;
   }
+}
+
+/* ------------------------------------------------------------------ text direction */
+
+const HEADING_BUILTIN = /^(heading\d|title|subtitle)$/i;
+/** Style names as Word shows them (English and Arabic UI). */
+const HEADING_NAME = /^(heading|title|subtitle|عنوان)/i;
+const MAX_DIRECTION_PARAS = 400;
+
+/**
+ * Aligns the paragraphs of freshly inserted content: headings centred, Arabic paragraphs right,
+ * English paragraphs left. `whole` = the paragraphs were created by this insert (any alignment may
+ * be changed except Justified); otherwise the text went into an existing paragraph, so only a
+ * left/right alignment is flipped – centred or justified paragraphs the user set up are kept.
+ */
+async function applyAutoDirection(ctx: Word.RequestContext, target: Word.Range | Word.Paragraph, whole: boolean): Promise<void> {
+  const v13 = supportsWordApi("1.3");
+  const range = target instanceof Word.Paragraph ? (v13 ? target.getRange() : null) : target;
+  let paras: Word.Paragraph[];
+  if (range) {
+    const col = range.paragraphs;
+    col.load(v13 ? "items/text,items/alignment,items/style,items/styleBuiltIn,items/tableNestingLevel" : "items/text,items/alignment,items/style");
+    await ctx.sync();
+    paras = col.items;
+  } else {
+    const p = target as Word.Paragraph;
+    p.load("text,alignment,style");
+    await ctx.sync();
+    paras = [p];
+  }
+  for (const p of paras.slice(0, MAX_DIRECTION_PARAS)) {
+    const builtIn = v13 ? String((p as Word.Paragraph).styleBuiltIn ?? "") : "";
+    const heading = HEADING_BUILTIN.test(builtIn) || HEADING_NAME.test(p.style ?? "");
+    const current = String(p.alignment);
+    if (heading) {
+      if (whole && current !== "Centered") p.alignment = "Centered";
+      continue;
+    }
+    const dir = detectDirection(p.text ?? "");
+    if (!dir) continue;
+    const want = alignmentFor(dir);
+    if (current === want) continue;
+    if (current === "Justified") continue; // justified reads correctly in both directions
+    if (!whole && current !== "Left" && current !== "Right") continue;
+    p.alignment = want;
+  }
+  await ctx.sync();
 }
 
 export async function insertContent(req: InsertRequest): Promise<InsertResult> {
@@ -505,10 +556,24 @@ export async function insertContent(req: InsertRequest): Promise<InsertResult> {
     let font = { name: sel.font.name || null, size: typeof sel.font.size === "number" && sel.font.size > 0 ? sel.font.size : null };
     if (req.location === "end") font = await getEndFont(ctx);
 
+    const auto = req.autoDirection ?? loadSettings().autoDirection;
+    // Plain text that forms its own paragraphs (multi-line, at the end, or typed into an empty
+    // paragraph) is inserted as HTML so each paragraph gets its own direction. A short text dropped
+    // into the middle of an existing paragraph stays inline.
+    let ownParagraphs = req.location === "end" || /\n/.test(content.trim());
+    if (auto && !ownParagraphs && sel.isEmpty && supportsWordApi("1.3")) {
+      const para = sel.paragraphs.getFirst();
+      para.load("text");
+      await ctx.sync();
+      ownParagraphs = !(para.text ?? "").trim();
+    }
+    const plainAsHtml = auto && req.format !== "markdown" && ownParagraphs && hasRtl(content);
+
     const r = await withTracking(ctx, track, async () => {
       let inserted: Word.Range | Word.Paragraph;
-      if (req.format === "markdown") {
-        const html = markdownToHtml(content, { fontFamily: font.name ?? undefined, fontSizePt: font.size ?? undefined });
+      if (req.format === "markdown" || plainAsHtml) {
+        const htmlOpts = { fontFamily: font.name ?? undefined, fontSizePt: font.size ?? undefined, autoDirection: auto };
+        const html = req.format === "markdown" ? markdownToHtml(content, htmlOpts) : plainToHtml(content, htmlOpts);
         if (req.location === "end") inserted = ctx.document.body.insertHtml(html, Word.InsertLocation.end);
         else if (req.location === "after") inserted = sel.insertHtml(html, sel.isEmpty ? Word.InsertLocation.replace : Word.InsertLocation.after);
         else inserted = sel.insertHtml(html, Word.InsertLocation.replace);
@@ -521,6 +586,10 @@ export async function insertContent(req: InsertRequest): Promise<InsertResult> {
         inserted = sel.insertText(content, Word.InsertLocation.replace);
       }
       await ctx.sync();
+      if (auto) {
+        // Never let alignment problems block the insert itself.
+        await applyAutoDirection(ctx, inserted, ownParagraphs || req.format === "markdown").catch(() => undefined);
+      }
       return inserted;
     });
     state.tracked = r.tracked;

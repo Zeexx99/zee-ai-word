@@ -372,6 +372,11 @@ export function SettingsDrawer({ open, settings, usage, undoDepth, onClearUndo, 
             onChange={(_, d) => onChange({ preserveFormatting: d.checked })}
             label="Keep formatting: change only the words that differ (bold, links, styles stay)"
           />
+          <Switch
+            checked={settings.autoDirection}
+            onChange={(_, d) => onChange({ autoDirection: d.checked })}
+            label="Auto direction: Arabic right-to-left and right-aligned, English left-aligned, headings centred"
+          />
         </section>
 
         <Divider />

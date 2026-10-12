@@ -927,6 +927,7 @@ export default function App() {
           label: `${m.title ?? "Chat answer"} – ${LOCATION_LABELS[location].toLowerCase()}`,
           preserveFormatting: s.preserveFormatting && m.original !== undefined,
           trackChanges: s.trackChanges,
+          autoDirection: s.autoDirection,
         });
         markApplied(m.id, location);
         const notes = [

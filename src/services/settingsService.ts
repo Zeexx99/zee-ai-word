@@ -92,6 +92,8 @@ export interface ZeeSettings {
   trackChanges: boolean;
   /** Edits change only the words that differ, keeping bold, links, styles and comments. */
   preserveFormatting: boolean;
+  /** Inserted text: Arabic right-to-left + right-aligned, English left-aligned, headings centred. */
+  autoDirection: boolean;
   /** Terms Zee AI must never rewrite, translate or "correct" (comma or newline separated). */
   protectedTerms: string;
   /** User-defined quick actions. */
@@ -125,6 +127,7 @@ export const DEFAULT_SETTINGS: ZeeSettings = {
   theme: "auto",
   trackChanges: false,
   preserveFormatting: true,
+  autoDirection: true,
   protectedTerms: DEFAULT_PROTECTED_TERMS,
   customActions: DEFAULT_CUSTOM_ACTIONS,
   useBulkModel: true,
@@ -149,6 +152,7 @@ export function sanitizeSettings(parsed: Partial<ZeeSettings> | null | undefined
   if (typeof merged.protectedTerms !== "string") merged.protectedTerms = DEFAULT_PROTECTED_TERMS;
   merged.trackChanges = merged.trackChanges === true;
   merged.preserveFormatting = merged.preserveFormatting !== false;
+  merged.autoDirection = merged.autoDirection !== false;
   merged.customActions = Array.isArray(merged.customActions)
     ? merged.customActions
         .filter((a) => a && typeof a.name === "string" && typeof a.instruction === "string" && a.name.trim() && a.instruction.trim())
