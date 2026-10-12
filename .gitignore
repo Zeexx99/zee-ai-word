@@ -12,3 +12,6 @@ setup-status.txt
 *.local
 publish-log.txt
 _publish-now.bat
+_check-and-push.bat
+_push-log.txt
+publish-log.txt

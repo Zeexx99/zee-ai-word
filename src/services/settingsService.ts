@@ -7,6 +7,8 @@
  * origin: per user, per machine, and never written into the document or into source code.
  */
 
+import type { TeamConfig } from "../utils/teamConfig";
+
 export type AuthMode = "apiKey" | "google" | "proxy";
 
 /** "auto" follows the Office theme (or the OS colour scheme outside Office). */
@@ -94,6 +96,14 @@ export interface ZeeSettings {
   protectedTerms: string;
   /** User-defined quick actions. */
   customActions: CustomAction[];
+  /** Whole-document passes (proofreading, long summaries, consistency) use the cheaper bulk model. */
+  useBulkModel: boolean;
+  bulkModel: string;
+  /** Shared team glossary + actions (imported file, URL or team proxy). */
+  team: TeamConfig | null;
+  /** Where the team config comes from: "", "file", an https URL, or "proxy". */
+  teamSource: string;
+  teamLoadedAt: number;
 }
 
 export const DEFAULT_SETTINGS: ZeeSettings = {
@@ -117,6 +127,11 @@ export const DEFAULT_SETTINGS: ZeeSettings = {
   preserveFormatting: true,
   protectedTerms: DEFAULT_PROTECTED_TERMS,
   customActions: DEFAULT_CUSTOM_ACTIONS,
+  useBulkModel: true,
+  bulkModel: "gemini-3.5-flash-lite",
+  team: null,
+  teamSource: "",
+  teamLoadedAt: 0,
 };
 
 export const STORAGE_KEY = "zeeai.word.settings.v1";
@@ -139,6 +154,10 @@ export function sanitizeSettings(parsed: Partial<ZeeSettings> | null | undefined
         .filter((a) => a && typeof a.name === "string" && typeof a.instruction === "string" && a.name.trim() && a.instruction.trim())
         .map((a) => ({ id: String(a.id || a.name), name: a.name.trim(), instruction: a.instruction.trim(), mode: (a.mode === "insert" ? "insert" : "replace") as CustomAction["mode"] }))
     : DEFAULT_CUSTOM_ACTIONS;
+  merged.useBulkModel = merged.useBulkModel !== false;
+  if (typeof merged.bulkModel !== "string" || !merged.bulkModel.trim()) merged.bulkModel = DEFAULT_SETTINGS.bulkModel;
+  if (merged.team && (typeof merged.team !== "object" || merged.team.zeeTeamConfig !== 1)) merged.team = null;
+  if (typeof merged.teamSource !== "string") merged.teamSource = "";
   return merged;
 }
 
@@ -173,7 +192,18 @@ export function isConfigured(s: ZeeSettings): boolean {
   return s.googleClientId.trim().length > 0 && s.gcpProjectId.trim().length > 0;
 }
 
-/** Protected terms as a clean list. */
-export function protectedTermList(s: Pick<ZeeSettings, "protectedTerms">): string[] {
-  return Array.from(new Set(s.protectedTerms.split(/[,;\n]+/).map((t) => t.trim()).filter(Boolean))).slice(0, 200);
+/** Protected terms (personal + team) as a clean list. */
+export function protectedTermList(s: Pick<ZeeSettings, "protectedTerms"> & { team?: TeamConfig | null }): string[] {
+  const all = `${s.protectedTerms}\n${s.team?.protectedTerms ?? ""}`;
+  return Array.from(new Set(all.split(/[,;\n]+/).map((t) => t.trim()).filter(Boolean))).slice(0, 300);
+}
+
+/** Personal actions followed by the team's. */
+export function allCustomActions(s: Pick<ZeeSettings, "customActions" | "team">): CustomAction[] {
+  return [...s.customActions, ...(s.team?.customActions ?? [])];
+}
+
+/** Settings for whole-document passes: the cheaper bulk model when enabled. */
+export function bulkSettings(s: ZeeSettings): ZeeSettings {
+  return s.useBulkModel && s.bulkModel.trim() ? { ...s, model: s.bulkModel.trim() } : s;
 }

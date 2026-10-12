@@ -1,0 +1,16 @@
+{
+  "actions": [
+    { "id": "zeeRewrite", "type": "ExecuteFunction", "name": "Zee AI: Rewrite selection" },
+    { "id": "zeeGrammar", "type": "ExecuteFunction", "name": "Zee AI: Grammar check" },
+    { "id": "zeeSummarize", "type": "ExecuteFunction", "name": "Zee AI: Summarize" },
+    { "id": "zeeConsistency", "type": "ExecuteFunction", "name": "Zee AI: Consistency check" },
+    { "id": "zeeOpen", "type": "ExecuteFunction", "name": "Zee AI: Open pane" }
+  ],
+  "shortcuts": [
+    { "action": "zeeRewrite", "key": { "default": "Ctrl+Alt+Shift+R", "mac": "Command+Option+Shift+R" } },
+    { "action": "zeeGrammar", "key": { "default": "Ctrl+Alt+Shift+G", "mac": "Command+Option+Shift+G" } },
+    { "action": "zeeSummarize", "key": { "default": "Ctrl+Alt+Shift+S", "mac": "Command+Option+Shift+S" } },
+    { "action": "zeeConsistency", "key": { "default": "Ctrl+Alt+Shift+K", "mac": "Command+Option+Shift+K" } },
+    { "action": "zeeOpen", "key": { "default": "Ctrl+Alt+Shift+Z", "mac": "Command+Option+Shift+Z" } }
+  ]
+}

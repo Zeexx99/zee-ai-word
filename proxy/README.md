@@ -17,3 +17,13 @@ listing models, so **Test connection** can refresh the model list through the pr
 
 The proxy only forwards `generateContent`, `streamGenerateContent`, `countTokens` and the model list,
 and it refuses requests without the token.
+
+### Shared team setup (optional)
+
+Export a team file in Zee AI → Settings → Team setup → **Export my glossary & actions**, then store it on the proxy:
+
+```
+wrangler secret put TEAM_CONFIG   # paste the whole JSON
+```
+
+Team members choose **Team setup → Load from an address → `proxy`**. The glossary and actions refresh every time the pane opens.

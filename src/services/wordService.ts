@@ -169,7 +169,9 @@ type UndoEntry =
       originalText: string;
       track: boolean;
     }
-  | { kind: "comments"; id: string; label: string; commentIds: string[] };
+  | { kind: "comments"; id: string; label: string; commentIds: string[] }
+  | { kind: "table"; id: string; label: string; before: string[][] }
+  | { kind: "alttext"; id: string; label: string; before: string };
 
 const undoStack: UndoEntry[] = [];
 type UndoListener = (label: string | null, depth: number) => void;
@@ -238,6 +240,34 @@ export async function undoLast(): Promise<string> {
       comments.load("items/id");
       await ctx.sync();
       comments.items.filter((c) => entry.commentIds.includes(c.id)).forEach((c) => c.delete());
+      await ctx.sync();
+    });
+    undoStack.pop();
+    notify();
+    return entry.label;
+  }
+
+  if (entry.kind === "table" || entry.kind === "alttext") {
+    await Word.run(async (ctx) => {
+      const found = ctx.document.contentControls.getByTag(TAG_PREFIX + entry.id);
+      found.load("items");
+      await ctx.sync();
+      const cc = found.items[0];
+      if (!cc) throw new Error(`Can't undo "${entry.label}": the table or picture was deleted or moved.`);
+      if (entry.kind === "table") {
+        const table = cc.tables.getFirst();
+        table.load("rowCount,values");
+        await ctx.sync();
+        entry.before.forEach((row, r) =>
+          row.forEach((v, c) => {
+            if ((table.values[r]?.[c] ?? "") !== v) table.getCell(r, c).value = v;
+          })
+        );
+      } else {
+        const pic = cc.inlinePictures.getFirst();
+        pic.altTextDescription = entry.before;
+      }
+      cc.delete(true);
       await ctx.sync();
     });
     undoStack.pop();
@@ -526,6 +556,8 @@ export interface CommentRequest {
   find: string;
   /** Comment text. */
   text: string;
+  /** 1-based paragraph to search first ([P#]); without a match the comment goes on that paragraph. */
+  paragraph?: number;
 }
 
 /**
@@ -543,9 +575,29 @@ export async function addComments(items: CommentRequest[], label: string): Promi
     await ctx.sync();
     const used = new Map<string, number>();
     const created: Word.Comment[] = [];
+    const needParas = items.some((i) => i.paragraph && i.paragraph > 0);
+    const paras = needParas ? ctx.document.body.paragraphs : null;
+    if (paras) {
+      paras.load("items");
+      await ctx.sync();
+    }
     for (const item of items) {
-      const find = item.find.replace(/\s+/g, " ").trim();
-      if (!find || find.length > MAX_SEARCH) {
+      const find = item.find.replace(/\s+/g, " ").trim().slice(0, MAX_SEARCH);
+      const para = paras && item.paragraph ? paras.items[item.paragraph - 1] : undefined;
+      if (para) {
+        let anchor: Word.Range | null = null;
+        if (find) {
+          const inPara = para.search(escapeWordSearch(find), { matchCase: false });
+          inPara.load("items");
+          await ctx.sync();
+          anchor = inPara.items[0] ?? null;
+        }
+        const c = (anchor ?? para.getRange(Word.RangeLocation.whole)).insertComment(item.text);
+        c.load("id");
+        created.push(c);
+        continue;
+      }
+      if (!find) {
         missing++;
         continue;
       }
@@ -605,4 +657,166 @@ export function onSelectionChange(cb: () => void): () => void {
       /* ignore */
     }
   };
+}
+
+/* ------------------------------------------------------------------ tables */
+
+export interface TableInfo {
+  values: string[][];
+  rows: number;
+  cols: number;
+}
+
+/** The table the cursor is in (or the first table in the selection), or null. */
+export async function getSelectedTable(): Promise<TableInfo | null> {
+  requireWord();
+  if (!supportsWordApi("1.3")) throw new Error("Table actions need Word 2016 or later (WordApi 1.3).");
+  return Word.run(async (ctx) => {
+    const sel = ctx.document.getSelection();
+    const parent = sel.parentTableOrNullObject;
+    parent.load("isNullObject,values,rowCount");
+    const inSel = sel.tables.getFirstOrNullObject();
+    inSel.load("isNullObject,values,rowCount");
+    await ctx.sync();
+    const t = !parent.isNullObject ? parent : !inSel.isNullObject ? inSel : null;
+    if (!t) return null;
+    const values = (t.values ?? []).map((r) => r.map((v) => normalizeWordText(String(v ?? "")).replace(/\n+/g, " ").trim()));
+    return { values, rows: values.length, cols: Math.max(0, ...values.map((r) => r.length)) };
+  });
+}
+
+/** Writes only the changed cells of the selected table (cell formatting stays). Undoable. */
+export async function writeTableCells(after: string[][], label: string, trackChanges: boolean): Promise<{ changed: number; tracked: boolean }> {
+  requireWord();
+  const id = uid();
+  let changed = 0;
+  let tracked = false;
+  let before: string[][] = [];
+  let undoable = false;
+  await Word.run(async (ctx) => {
+    const sel = ctx.document.getSelection();
+    const parent = sel.parentTableOrNullObject;
+    parent.load("isNullObject,values");
+    const inSel = sel.tables.getFirstOrNullObject();
+    inSel.load("isNullObject,values");
+    await ctx.sync();
+    const table = !parent.isNullObject ? parent : !inSel.isNullObject ? inSel : null;
+    if (!table) throw new Error("Put the cursor in the table again, then click Apply.");
+    before = table.values.map((r) => r.map((v) => String(v ?? "")));
+    try {
+      const cc = table.getRange(Word.RangeLocation.whole).insertContentControl();
+      cc.tag = TAG_PREFIX + id;
+      cc.title = "Zee AI";
+      cc.appearance = Word.ContentControlAppearance.hidden;
+      await ctx.sync();
+      undoable = true;
+    } catch {
+      undoable = false;
+    }
+    const r = await withTracking(ctx, trackChanges, async () => {
+      after.forEach((row, i) =>
+        row.forEach((v, j) => {
+          const old = before[i]?.[j];
+          if (old === undefined) return;
+          if (normalizeWordText(old).replace(/\s+/g, " ").trim() !== v.replace(/\s+/g, " ").trim()) {
+            table.getCell(i, j).value = v;
+            changed++;
+          }
+        })
+      );
+      await ctx.sync();
+    });
+    tracked = r.tracked;
+  });
+  if (undoable && changed) pushUndo({ kind: "table", id, label, before });
+  else if (undoable) unwrap([TAG_PREFIX + id]).catch(() => undefined);
+  return { changed, tracked };
+}
+
+/* ------------------------------------------------------------------ pictures */
+
+export interface PictureInfo {
+  base64: string;
+  altText: string;
+  /** Text of the paragraphs around the picture (context for captions). */
+  context: string;
+}
+
+/** The first picture in the selection (or the picture the cursor is on), or null. */
+export async function getSelectedPicture(): Promise<PictureInfo | null> {
+  requireWord();
+  return Word.run(async (ctx) => {
+    const pics = ctx.document.getSelection().inlinePictures;
+    pics.load("items/altTextDescription");
+    await ctx.sync();
+    const pic = pics.items[0];
+    if (!pic) return null;
+    const b64 = pic.getBase64ImageSrc();
+    let context = "";
+    if (supportsWordApi("1.3")) {
+      const para = pic.paragraph;
+      const prev = para.getPreviousOrNullObject();
+      const next = para.getNextOrNullObject();
+      prev.load("text,isNullObject");
+      next.load("text,isNullObject");
+      await ctx.sync();
+      context = [prev.isNullObject ? "" : prev.text, next.isNullObject ? "" : next.text].map((t) => normalizeWordText(t ?? "").trim()).filter(Boolean).join("\n").slice(0, 1500);
+    } else {
+      await ctx.sync();
+    }
+    return { base64: b64.value, altText: pic.altTextDescription ?? "", context };
+  });
+}
+
+/** Sets the selected picture's alt text (undoable). */
+export async function setPictureAltText(text: string, label: string): Promise<void> {
+  requireWord();
+  const id = uid();
+  let before = "";
+  let undoable = false;
+  await Word.run(async (ctx) => {
+    const pics = ctx.document.getSelection().inlinePictures;
+    pics.load("items/altTextDescription");
+    await ctx.sync();
+    const pic = pics.items[0];
+    if (!pic) throw new Error("Select the picture again, then click Apply.");
+    before = pic.altTextDescription ?? "";
+    try {
+      const cc = pic.insertContentControl();
+      cc.tag = TAG_PREFIX + id;
+      cc.title = "Zee AI";
+      cc.appearance = Word.ContentControlAppearance.hidden;
+      await ctx.sync();
+      undoable = true;
+    } catch {
+      undoable = false;
+    }
+    pic.altTextDescription = text;
+    await ctx.sync();
+  });
+  if (undoable) pushUndo({ kind: "alttext", id, label, before });
+}
+
+/** Inserts a caption paragraph (Word's Caption style) directly below the selected picture (undoable). */
+export async function insertPictureCaption(text: string, label: string, trackChanges: boolean): Promise<void> {
+  requireWord();
+  const id = uid();
+  let undoable = false;
+  await Word.run(async (ctx) => {
+    const pics = ctx.document.getSelection().inlinePictures;
+    pics.load("items");
+    await ctx.sync();
+    const pic = pics.items[0];
+    if (!pic) throw new Error("Select the picture again, then click Insert caption.");
+    await withTracking(ctx, trackChanges, async () => {
+      const p = pic.paragraph.insertParagraph(text, Word.InsertLocation.after);
+      if (supportsWordApi("1.3")) p.styleBuiltIn = Word.BuiltInStyleName.caption;
+      await ctx.sync();
+      undoable = wrap(p, id);
+      await ctx.sync().catch(() => {
+        undoable = false;
+      });
+    });
+  });
+  if (undoable) pushUndo({ kind: "insert", id, label, originalOoxml: null, originalText: "", track: trackChanges });
 }

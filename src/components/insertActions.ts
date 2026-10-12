@@ -8,6 +8,10 @@ export interface InsertActions {
   insert: (message: ChatMessage, location: InsertLocation) => Promise<void>;
   /** Add grammar findings as Word comments. */
   comment: (message: ChatMessage) => Promise<void>;
+  /** Apply a table clean-up proposal cell by cell. */
+  applyTable: (message: ChatMessage) => Promise<void>;
+  /** Insert a caption below the selected picture, or set its alt text. */
+  applyPicture: (message: ChatMessage) => Promise<void>;
   /** Select paragraph n (1-based) in the document – used by [P#] citations. */
   goToParagraph: (n: number) => void;
   /** True inside Word (insert buttons are disabled in the browser preview). */

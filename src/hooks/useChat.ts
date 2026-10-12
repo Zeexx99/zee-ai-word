@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { estimateTokens, GeminiError, generateJson, streamChat, type ChatTurn, type Usage } from "../services/geminiService";
 import { buildHistory } from "../utils/history";
-import { protectedTermList, type ZeeSettings } from "../services/settingsService";
+import { bulkSettings, protectedTermList, type ZeeSettings } from "../services/settingsService";
 import { GRAMMAR_SCHEMA, GRAMMAR_SYSTEM_PROMPT, SYSTEM_PROMPT, grammarPrompt, withGlossary, type GrammarIssue, type GrammarResult } from "../services/prompts";
 import { clearChat, getDocId, loadChat, saveChat } from "../services/chatStore";
 import type { InsertFormat, InsertLocation } from "../services/wordService";
@@ -35,6 +35,12 @@ export interface ChatMessage {
   citations?: boolean;
   /** Set after the findings were added as Word comments. */
   commented?: boolean;
+  /** "fix" = grammar style (original → fix), "finding" = consistency/reference findings. */
+  issueStyle?: "fix" | "finding";
+  /** Table clean-up proposal (applied cell by cell). */
+  tableEdit?: { before: string[][]; after: string[][]; notes: string[] };
+  /** Picture result that can be applied (caption below the picture / alt text). */
+  pictureResult?: { kind: "caption" | "alt" };
   /** Set after the user inserted this result. */
   applied?: InsertLocation;
   model?: string;
@@ -61,6 +67,8 @@ export interface ActionInput extends SendInput {
 /** A multi-step job (e.g. chunked whole-document work) that reports progress into one message. */
 export interface TaskInput extends SendInput {
   assistant: Partial<ChatMessage>;
+  /** Use the cheaper bulk model (Settings → Cost) for this job. */
+  bulk?: boolean;
   /** Text used only for the cost-guard estimate (e.g. the whole document). */
   estimateText: string;
   work: (ctx: {
@@ -265,7 +273,9 @@ export function useChat({ getSettings, onUsage, confirmLarge }: ChatHookOptions)
     async (input: TaskInput) => {
       const ctx = await begin({ display: input.display, prompt: input.estimateText, contextLabel: input.contextLabel }, "", input.assistant, false);
       if (!ctx) return;
-      const { settings, asstId, controller } = ctx;
+      const settings = input.bulk ? bulkSettings(ctx.settings) : ctx.settings;
+      const { asstId, controller } = ctx;
+      if (settings.model !== ctx.settings.model) patch(asstId, { model: settings.model });
       const total: Usage = { promptTokens: 0, outputTokens: 0, totalTokens: 0 };
       // The user turn keeps a short prompt (not the whole document) in the saved history.
       patch(asstId, { text: "" });

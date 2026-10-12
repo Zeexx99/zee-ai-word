@@ -41,13 +41,41 @@ import { ChatInput } from "./components/ChatInput";
 import { QuickActions } from "./components/QuickActions";
 // Imported eagerly (never lazy-loaded): a separate chunk breaks when Office holds a cached page from an older deploy.
 import { SettingsDrawer } from "./components/SettingsDrawer";
-import { ConfirmDialog, DraftDialog, type ConfirmState, type DraftChoice } from "./components/Dialogs";
+import {
+  ConfirmDialog,
+  DraftDialog,
+  ReferenceDialog,
+  TemplateDialog,
+  type ConfirmState,
+  type DraftChoice,
+  type ReferenceChoice,
+  type TemplateChoice,
+} from "./components/Dialogs";
 import { InsertActionsContext, copyText, type InsertActions } from "./components/insertActions";
 
-import { isConfigured, loadSettings, modelLabel, saveSettings, type CustomAction, type DocContext, type ZeeSettings } from "./services/settingsService";
+import {
+  allCustomActions,
+  isConfigured,
+  loadSettings,
+  modelLabel,
+  saveSettings,
+  type CustomAction,
+  type DocContext,
+  type ZeeSettings,
+} from "./services/settingsService";
+import { onCommand } from "./services/commands";
+import { fetchTeamConfig } from "./services/teamService";
+import type { ReportTemplate } from "./services/templates";
+import { diffGrid, fitGrid, keepsNumbers, tableToMarkdown } from "./utils/tables";
+import { detectImageMime } from "./utils/files";
 import {
   LOCATION_LABELS,
   addComments,
+  getSelectedPicture,
+  getSelectedTable,
+  insertPictureCaption,
+  setPictureAltText,
+  writeTableCells,
   cleanupOrphanMarkers,
   clearUndoHistory,
   getDocumentParagraphs,
@@ -63,7 +91,22 @@ import {
   type InsertLocation,
 } from "./services/wordService";
 import {
+  CONSISTENCY_SYSTEM_PROMPT,
   DRAFT_SYSTEM_PROMPT,
+  FINDINGS_SCHEMA,
+  PICTURE_SYSTEM_PROMPT,
+  REFERENCE_SYSTEM_PROMPT,
+  TABLE_CLEAN_SCHEMA,
+  TABLE_SYSTEM_PROMPT,
+  consistencyPrompt,
+  explainTablePrompt,
+  notesToTablePrompt,
+  picturePrompt,
+  referenceCheckPrompt,
+  tableCleanPrompt,
+  tableCommentaryPrompt,
+  templateFillPrompt,
+  type DocFinding,
   GRAMMAR_SCHEMA,
   GRAMMAR_SYSTEM_PROMPT,
   chunkSummaryPrompt,
@@ -84,7 +127,7 @@ import {
   type SummaryStyle,
   type ToneId,
 } from "./services/prompts";
-import { generateJson, generateText, type Usage } from "./services/geminiService";
+import { generateFromParts, generateJson, generateText, type GeminiPart, type Usage } from "./services/geminiService";
 import { getDocTitle } from "./services/chatStore";
 import { countWords, preserveEdges, shorten, truncateMiddle } from "./utils/text";
 import { looksLikeMarkdown, markdownToPlain } from "./utils/mdToHtml";
@@ -121,6 +164,15 @@ export default function App() {
   useBodyThemeClass(dark);
   const inWord = useMemo(() => isWordAvailable(), []);
   const docTitle = useMemo(() => getDocTitle(), []);
+
+  // Refresh the shared team config (glossary + actions) from its URL / the team proxy once per pane load.
+  useEffect(() => {
+    const src = settingsRef.current.teamSource;
+    if (!src || src === "file") return;
+    fetchTeamConfig(src, settingsRef.current)
+      .then((team) => updateSettings({ team, teamLoadedAt: Date.now() }))
+      .catch(() => undefined); // offline: keep the last loaded copy
+  }, [updateSettings]);
 
   /* ------------------------------------------------------------ toasts */
   const toasterId = useId("toaster");
@@ -439,7 +491,8 @@ export default function App() {
       prompt: "Proofread the whole document.",
       estimateText: paras.join("\n").repeat(2), // input + corrected text coming back
       contextLabel: `Whole document · ${words.toLocaleString()} words`,
-      assistant: { kind: "action", title: "Grammar & spelling", scope: "document", format: "plain" },
+      assistant: { kind: "action", title: "Grammar & spelling", scope: "document", format: "plain", issueStyle: "fix" },
+      bulk: true,
       work: async ({ settings, signal, system, progress, addUsage }) => {
         const issues: GrammarIssue[] = [];
         for (let i = 0; i < chunks.length; i++) {
@@ -478,6 +531,7 @@ export default function App() {
         estimateText: paras.join("\n"),
         contextLabel: label,
         assistant: { kind: "action", title: name, format: "markdown", defaultLocation: "after", citations: true },
+        bulk: true,
         work: async ({ settings, signal, system, progress, addUsage }) => {
           const notes: string[] = [];
           for (let i = 0; i < chunks.length; i++) {
@@ -495,6 +549,291 @@ export default function App() {
     },
     [runTask]
   );
+
+  /* ------------------------------------------------------------ findings helper (consistency, reference) */
+  const findingsToIssues = (findings: unknown): GrammarIssue[] =>
+    (Array.isArray(findings) ? (findings as DocFinding[]) : [])
+      .filter((f) => f && typeof f.problem === "string" && f.problem.trim())
+      .map((f) => ({
+        original: typeof f.quote === "string" ? f.quote : "",
+        fix: typeof f.suggestion === "string" ? f.suggestion : "",
+        type: typeof f.category === "string" ? f.category : "finding",
+        reason: f.problem,
+        paragraph: Number.isFinite(f.paragraph) && f.paragraph > 0 ? Math.round(f.paragraph) : undefined,
+      }));
+
+  /* ------------------------------------------------------------ consistency check */
+  const onConsistency = useCallback(async () => {
+    if (!ensureConfigured()) return;
+    if (!inWord) {
+      toast("info", "Open Zee AI in Word", "The consistency check reads the whole document.");
+      return;
+    }
+    let paras: string[];
+    try {
+      paras = await getDocumentParagraphs();
+    } catch (e) {
+      toastError(e);
+      return;
+    }
+    const numbered = numberParagraphs(paras);
+    if (!numbered.trim()) {
+      toast("info", "Nothing to check", "The document is empty.");
+      return;
+    }
+    const t = truncateMiddle(numbered, Math.max(settingsRef.current.maxContextChars, 120_000));
+    const words = countWords(paras.join(" "));
+    await runTask({
+      display: "Consistency check: whole document",
+      prompt: "Check the whole document for inconsistent units, names, numbers, dates and terms.",
+      estimateText: t.text,
+      contextLabel: `Whole document · ${words.toLocaleString()} words${t.truncated ? " (trimmed)" : ""}`,
+      assistant: { kind: "action", title: "Consistency check", scope: "document", format: "plain", issueStyle: "finding" },
+      bulk: false, // needs the whole document in one view – use the main model
+      work: async ({ settings, signal, system, addUsage }) => {
+        const { data, usage } = await generateJson<{ summary: string; findings: DocFinding[] }>({
+          settings,
+          prompt: consistencyPrompt(t.text),
+          systemInstruction: system(CONSISTENCY_SYSTEM_PROMPT),
+          schema: FINDINGS_SCHEMA,
+          signal,
+        });
+        addUsage(usage);
+        const issues = findingsToIssues(data?.findings);
+        return { text: `${data?.summary ?? ""}${issues.length ? ` ${issues.length} finding${issues.length === 1 ? "" : "s"} – add them as comments to fix each in place.` : ""}`.trim(), issues };
+      },
+    });
+  }, [ensureConfigured, inWord, runTask, toast, toastError]);
+
+  /* ------------------------------------------------------------ check against a reference */
+  const [referenceOpen, setReferenceOpen] = useState(false);
+  const onReference = useCallback(
+    async (c: ReferenceChoice) => {
+      setReferenceOpen(false);
+      if (!ensureConfigured()) return;
+      let paras: string[];
+      try {
+        paras = await getDocumentParagraphs();
+      } catch (e) {
+        toastError(e);
+        return;
+      }
+      const t = truncateMiddle(numberParagraphs(paras), Math.max(settingsRef.current.maxContextChars, 120_000));
+      if (!t.text.trim()) {
+        toast("info", "Nothing to check", "The document is empty.");
+        return;
+      }
+      const refText = c.reference.kind === "text" ? truncateMiddle(c.reference.text, 400_000).text : "";
+      const parts: GeminiPart[] =
+        c.reference.kind === "inline"
+          ? [{ text: `REFERENCE DOCUMENT: ${c.reference.name} (attached)` }, { inlineData: { mimeType: c.reference.mimeType, data: c.reference.data } }]
+          : [{ text: `--- REFERENCE "${c.reference.name}" START ---\n${refText}\n--- REFERENCE END ---` }];
+      parts.push({ text: referenceCheckPrompt(c.question, t.text) });
+      await runTask({
+        display: `Check against “${c.reference.name}”: ${shorten(c.question, 90)}`,
+        prompt: `Check the document against the reference "${c.reference.name}": ${c.question}`,
+        // PDFs are billed at roughly 260 tokens per page; estimate from the file size.
+        estimateText: t.text + refText + (c.reference.kind === "inline" ? "x".repeat(Math.min(4_000_000, c.reference.data.length / 3)) : ""),
+        contextLabel: `Document + ${c.reference.name}`,
+        assistant: { kind: "action", title: "Reference check", scope: "document", format: "plain", issueStyle: "finding" },
+        work: async ({ settings, signal, system, addUsage }) => {
+          const r = await generateFromParts<{ summary: string; findings: DocFinding[] }>({
+            settings,
+            parts,
+            systemInstruction: system(REFERENCE_SYSTEM_PROMPT),
+            schema: FINDINGS_SCHEMA,
+            signal,
+          });
+          addUsage(r.usage);
+          const issues = findingsToIssues(r.data?.findings);
+          return { text: r.data?.summary ?? "", issues };
+        },
+      });
+    },
+    [ensureConfigured, runTask, toast, toastError]
+  );
+
+  /* ------------------------------------------------------------ tables */
+  const onTable = async (action: "explain" | "commentary" | "clean" | "fromNotes") => {
+    if (!ensureConfigured()) return;
+    if (action === "fromNotes") {
+      const text = await requireSelection();
+      if (!text) return;
+      await runAction({
+        kind: "action",
+        title: "Notes → table",
+        display: `Turn into a table: “${shorten(text, 80)}”`,
+        prompt: notesToTablePrompt(text),
+        system: TABLE_SYSTEM_PROMPT,
+        contextLabel: selLabel(text),
+        format: "markdown",
+        defaultLocation: "after",
+      });
+      return;
+    }
+    let table: Awaited<ReturnType<typeof getSelectedTable>>;
+    try {
+      table = await getSelectedTable();
+    } catch (e) {
+      toastError(e);
+      return;
+    }
+    if (!table || !table.rows) {
+      toast("info", "Click inside a table first", "Put the cursor anywhere in the table you want Zee AI to work on.");
+      return;
+    }
+    const md = tableToMarkdown(table.values);
+    const label = `Table · ${table.rows} × ${table.cols}`;
+    if (action === "explain") {
+      await runAction({ kind: "action", title: "Explain table", display: "Explain this table", prompt: explainTablePrompt(md), system: TABLE_SYSTEM_PROMPT, contextLabel: label, format: "markdown", defaultLocation: "after" });
+      return;
+    }
+    if (action === "commentary") {
+      await runAction({
+        kind: "action",
+        title: "Table commentary",
+        display: "Write a commentary for this table",
+        prompt: tableCommentaryPrompt(md),
+        system: TABLE_SYSTEM_PROMPT,
+        contextLabel: label,
+        format: "markdown",
+        defaultLocation: "after",
+      });
+      return;
+    }
+    const before = table.values;
+    await runTask({
+      display: "Clean up this table",
+      prompt: "Clean up the table (spelling, units, formatting) without changing values.",
+      estimateText: JSON.stringify(before).repeat(2),
+      contextLabel: label,
+      assistant: { kind: "action", title: "Table clean-up", format: "plain" },
+      work: async ({ settings, signal, system, addUsage }) => {
+        const { data, usage } = await generateJson<{ cells: string[][]; notes: string[] }>({
+          settings,
+          prompt: tableCleanPrompt(before),
+          systemInstruction: system(TABLE_SYSTEM_PROMPT),
+          schema: TABLE_CLEAN_SCHEMA,
+          signal,
+        });
+        addUsage(usage);
+        let after = fitGrid(before, data?.cells);
+        // Safety net: any cell whose numbers changed is reverted to the original.
+        let reverted = 0;
+        after = after.map((r, i) =>
+          r.map((v, j) => {
+            if (keepsNumbers(before[i][j], v)) return v;
+            reverted++;
+            return before[i][j];
+          })
+        );
+        const notes = (Array.isArray(data?.notes) ? data.notes : []).filter((n) => typeof n === "string").slice(0, 8);
+        if (reverted) notes.push(`${reverted} proposed change${reverted === 1 ? "" : "s"} would have altered a number and ${reverted === 1 ? "was" : "were"} discarded.`);
+        const changes = diffGrid(before, after).length;
+        return { text: changes ? `${changes} cell${changes === 1 ? "" : "s"} to tidy.` : "The table already looks clean.", tableEdit: { before, after, notes } };
+      },
+    });
+  };
+
+  const applyTable = useCallback(
+    async (m: ChatMessage) => {
+      if (!m.tableEdit) return;
+      try {
+        const r = await writeTableCells(m.tableEdit.after, "Table clean-up", settingsRef.current.trackChanges);
+        markApplied(m.id, "replace");
+        toast("success", `Updated ${r.changed} cell${r.changed === 1 ? "" : "s"}`, `${r.tracked ? "Recorded as Track Changes. " : ""}Undo with ↶.`);
+      } catch (e) {
+        toastError(e);
+      }
+    },
+    [markApplied, toast, toastError]
+  );
+
+  /* ------------------------------------------------------------ pictures */
+  const onPicture = async (kind: "caption" | "alt" | "describe") => {
+    if (!ensureConfigured()) return;
+    if (!inWord) {
+      toast("info", "Open Zee AI in Word", "Select a picture in the document first.");
+      return;
+    }
+    let pic: Awaited<ReturnType<typeof getSelectedPicture>>;
+    try {
+      pic = await getSelectedPicture();
+    } catch (e) {
+      toastError(e);
+      return;
+    }
+    if (!pic) {
+      toast("info", "Select a picture first", "Click a picture or chart in the document (in line with text), then try again.");
+      return;
+    }
+    const title = kind === "caption" ? "Picture caption" : kind === "alt" ? "Alt text" : "Picture analysis";
+    const image = pic;
+    await runTask({
+      display: kind === "caption" ? "Write a caption for the selected picture" : kind === "alt" ? "Generate alt text for the selected picture" : "Describe / analyse the selected picture",
+      prompt: `${title} for the selected picture.`,
+      estimateText: "x".repeat(1200 * 4) + image.context,
+      contextLabel: image.altText ? `Picture · current alt text: “${shorten(image.altText, 40)}”` : "Picture",
+      assistant: { kind: "action", title, format: kind === "describe" ? "markdown" : "plain", defaultLocation: "after", pictureResult: kind === "describe" ? undefined : { kind } },
+      work: async ({ settings, signal, system, addUsage }) => {
+        const r = await generateFromParts({
+          settings,
+          parts: [{ inlineData: { mimeType: detectImageMime(image.base64), data: image.base64 } }, { text: picturePrompt(kind, image.context) }],
+          systemInstruction: system(PICTURE_SYSTEM_PROMPT),
+          signal,
+        });
+        addUsage(r.usage);
+        return { text: kind === "describe" ? r.text : r.text.replace(/^["“]|["”]$/g, "").trim() };
+      },
+    });
+  };
+
+  const applyPicture = useCallback(
+    async (m: ChatMessage) => {
+      if (!m.pictureResult) return;
+      try {
+        if (m.pictureResult.kind === "caption") {
+          await insertPictureCaption(m.text.trim(), "Picture caption", settingsRef.current.trackChanges);
+          toast("success", "Caption inserted", "Added below the picture in Word's Caption style. Undo with ↶.");
+        } else {
+          await setPictureAltText(m.text.trim(), "Alt text");
+          toast("success", "Alt text set", "Screen readers will now read it. Undo with ↶.");
+        }
+        markApplied(m.id, "after");
+      } catch (e) {
+        toastError(e);
+      }
+    },
+    [markApplied, toast, toastError]
+  );
+
+  /* ------------------------------------------------------------ report templates */
+  const [templatePick, setTemplatePick] = useState<ReportTemplate | null>(null);
+  const onTemplateRun = async (c: TemplateChoice) => {
+    setTemplatePick(null);
+    if (c.fillFromSelection) {
+      if (!ensureConfigured()) return;
+      const notes = await requireSelection();
+      if (!notes) return;
+      await runAction({
+        kind: "draft",
+        title: c.template.name,
+        display: `${c.template.name} from the selected notes`,
+        prompt: templateFillPrompt(c.template.outline, notes),
+        system: DRAFT_SYSTEM_PROMPT,
+        contextLabel: selLabel(notes),
+        format: "markdown",
+        defaultLocation: c.location,
+      });
+      return;
+    }
+    try {
+      await insertContent({ content: c.template.outline, format: "markdown", location: c.location, label: `Template: ${c.template.name}`, trackChanges: settingsRef.current.trackChanges });
+      toast("success", "Template inserted", "Replace the [placeholders]. References → Table of Contents works with these headings. Undo with ↶.");
+    } catch (e) {
+      toastError(e);
+    }
+  };
 
   /* ------------------------------------------------------------ my quick actions */
   const [settingsFocus, setSettingsFocus] = useState<"actions" | null>(null);
@@ -594,7 +933,11 @@ export default function App() {
         const r = await addComments(
           issues.map((i) => ({
             find: i.original,
-            text: `Zee AI · ${i.type || "suggestion"}: “${i.original}” → “${i.fix}”${i.reason ? ` – ${i.reason}` : ""}`,
+            paragraph: i.paragraph,
+            text:
+              m.issueStyle === "finding"
+                ? `Zee AI · ${i.type || "finding"}: ${i.reason}${i.fix ? ` Suggestion: ${i.fix}` : ""}`
+                : `Zee AI · ${i.type || "suggestion"}: “${i.original}” → “${i.fix}”${i.reason ? ` – ${i.reason}` : ""}`,
           })),
           `${m.title ?? "Grammar"} – ${issues.length} comment${issues.length === 1 ? "" : "s"}`
         );
@@ -618,7 +961,20 @@ export default function App() {
     [toastError]
   );
 
-  const insertActions = useMemo<InsertActions>(() => ({ insert, comment, goToParagraph, canInsert: inWord }), [insert, comment, goToParagraph, inWord]);
+  const insertActions = useMemo<InsertActions>(
+    () => ({ insert, comment, goToParagraph, applyTable, applyPicture, canInsert: inWord }),
+    [insert, comment, goToParagraph, applyTable, applyPicture, inWord]
+  );
+
+  /* ------------------------------------------------------------ ribbon / right-click / keyboard commands */
+  const commandRef = useRef<(cmd: string) => void>(() => undefined);
+  commandRef.current = (cmd: string) => {
+    if (cmd === "rewrite") void onRewrite();
+    else if (cmd === "grammar") void onGrammar();
+    else if (cmd === "summarize") void onSummarize("bullets");
+    else if (cmd === "consistency") void onConsistency();
+  };
+  useEffect(() => onCommand((cmd) => commandRef.current(cmd)), []);
 
   /* ------------------------------------------------------------ export chat */
   const chatAsText = useCallback(
@@ -754,7 +1110,12 @@ export default function App() {
             onLength={onLength}
             onTranslate={onTranslate}
             onDraft={() => setDraftOpen(true)}
-            customActions={settings.customActions}
+            customActions={allCustomActions(settings)}
+            onTable={onTable}
+            onConsistency={onConsistency}
+            onReference={() => (ensureConfigured() ? setReferenceOpen(true) : undefined)}
+            onPicture={onPicture}
+            onTemplate={setTemplatePick}
             onCustom={onCustom}
             onManageActions={() => {
               setSettingsFocus("actions");
@@ -790,6 +1151,8 @@ export default function App() {
             />
           )}
           <DraftDialog open={draftOpen} hasSelection={selectionWords > 0} onClose={() => setDraftOpen(false)} onRun={onDraft} />
+          <ReferenceDialog open={referenceOpen} onClose={() => setReferenceOpen(false)} onRun={onReference} />
+          <TemplateDialog template={templatePick} hasSelection={selectionWords > 0} onClose={() => setTemplatePick(null)} onRun={onTemplateRun} />
           <ConfirmDialog state={confirmState} onResult={onConfirmResult} />
           <Toaster toasterId={toasterId} position="top-end" />
         </InsertActionsContext.Provider>

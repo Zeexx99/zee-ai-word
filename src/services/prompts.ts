@@ -153,6 +153,8 @@ export interface GrammarIssue {
   fix: string;
   type: string;
   reason: string;
+  /** Paragraph number ([P#]) when known – used to anchor comments and jump to the text. */
+  paragraph?: number;
 }
 
 export interface GrammarResult {
@@ -206,4 +208,132 @@ ${notes.map((n, i) => `--- PART ${i + 1} ---\n${n}`).join("\n\n")}`;
 
 export function grammarChunkPrompt(text: string): string {
   return grammarPrompt(text).replace("Proofread the selected text.", "Proofread this part of a longer document. Only real errors.");
+}
+
+/* ---------------------------------------------------------------- tables */
+
+export const TABLE_SYSTEM_PROMPT = `You are Zee AI, working with a table from a Microsoft Word document (given as a Markdown table).
+Be precise with numbers and units. Never invent values that are not in the table.`;
+
+export function explainTablePrompt(md: string): string {
+  return `Explain this table for a reader of the report: what it shows, the key figures, trends, outliers and anything that looks inconsistent or suspicious. Use short Markdown bullets.\n\n${md}`;
+}
+
+export function tableCommentaryPrompt(md: string): string {
+  return `Write a short commentary paragraph (3–6 sentences) to place directly under this table in a technical report: describe the main results and trends with the key numbers. Output only the paragraph.\n\n${md}`;
+}
+
+export function notesToTablePrompt(text: string): string {
+  return `Turn the selected notes into one well-structured Markdown table with a header row. Keep every value and unit exactly; use empty cells where a value is unknown. Output only the table (you may add one short caption line above it in bold).\n\n--- NOTES START ---\n${text}\n--- NOTES END ---`;
+}
+
+export const TABLE_CLEAN_SCHEMA: Record<string, unknown> = {
+  type: "OBJECT",
+  properties: {
+    cells: { type: "ARRAY", items: { type: "ARRAY", items: { type: "STRING" } } },
+    notes: { type: "ARRAY", items: { type: "STRING" } },
+  },
+  required: ["cells", "notes"],
+};
+
+export function tableCleanPrompt(values: string[][]): string {
+  return `Clean up this table. Return "cells" with EXACTLY ${values.length} rows × ${values[0]?.length ?? 0} columns, same order.
+Allowed: fix spelling, consistent capitalisation, consistent unit notation (e.g. "bbl/d" everywhere), trim stray spaces, consistent date format, consistent decimal places within a column.
+Forbidden: changing any numeric value, moving data between cells, adding or removing rows/columns, filling empty cells with guesses.
+In "notes", list up to 8 short notes about what you changed or what looks wrong but was left alone.
+
+Table (JSON, row by row):
+${JSON.stringify(values)}`;
+}
+
+/* ---------------------------------------------------------------- findings (consistency, reference check) */
+
+export interface DocFinding {
+  paragraph: number;
+  quote: string;
+  problem: string;
+  suggestion: string;
+  category: string;
+}
+
+export const FINDINGS_SCHEMA: Record<string, unknown> = {
+  type: "OBJECT",
+  properties: {
+    summary: { type: "STRING" },
+    findings: {
+      type: "ARRAY",
+      items: {
+        type: "OBJECT",
+        properties: {
+          paragraph: { type: "INTEGER" },
+          quote: { type: "STRING" },
+          problem: { type: "STRING" },
+          suggestion: { type: "STRING" },
+          category: { type: "STRING" },
+        },
+        required: ["paragraph", "quote", "problem", "suggestion", "category"],
+      },
+    },
+  },
+  required: ["summary", "findings"],
+};
+
+export const CONSISTENCY_SYSTEM_PROMPT = `You are Zee AI, a meticulous technical editor checking an engineering document for internal consistency.
+Paragraphs are numbered "[P#]". Report only real inconsistencies; do not restyle text. Return JSON only.`;
+
+export function consistencyPrompt(numbered: string): string {
+  return `Check this document for internal inconsistencies:
+- units and unit notation (e.g. "bbl/d" vs "BOPD" vs "b/d", psi vs psia, °F vs F),
+- names and identifiers (well names like "W-12" vs "Well 12", equipment tags, company/person names),
+- numbers that should match (a total vs its parts, the same figure stated twice with different values, % vs fractions),
+- dates and periods (contradictory dates, impossible sequences, mixed date formats),
+- abbreviations used before being defined or defined twice differently,
+- terminology (the same thing called by different names).
+For each finding give: "paragraph" (the [P#] number where the problem appears), "quote" (the exact words from that paragraph, max 12 words, copied verbatim), "problem", "suggestion" (what to use instead) and "category" (units | names | numbers | dates | abbreviations | terminology).
+"summary": one or two sentences about the document's overall consistency.
+
+${numbered}`;
+}
+
+export const REFERENCE_SYSTEM_PROMPT = `You are Zee AI, comparing a document against a reference (procedure, standard, specification or earlier report).
+The document's paragraphs are numbered "[P#]". Be specific and cite the reference section or page when you can. Return JSON only.`;
+
+export function referenceCheckPrompt(question: string, numbered: string): string {
+  return `${question.trim()}
+
+For each finding give: "paragraph" (the [P#] number in the DOCUMENT, or 0 if the finding is about something missing entirely), "quote" (exact words from that paragraph, max 12 words, or "" when missing), "problem" (what contradicts or is missing, with the reference section/page), "suggestion" (what to change or add) and "category" (contradiction | missing | outdated | unclear).
+"summary": 2–4 sentences with the overall verdict.
+
+--- DOCUMENT START ---
+${numbered}
+--- DOCUMENT END ---`;
+}
+
+export const DEFAULT_REFERENCE_QUESTION =
+  "Does this document contradict the reference, leave out anything the reference requires, or use outdated values or steps? Check requirements, limits, procedures and numbers.";
+
+/* ---------------------------------------------------------------- pictures */
+
+export const PICTURE_SYSTEM_PROMPT = `You are Zee AI, describing a picture from a Microsoft Word document (photo, chart, diagram or screenshot) for an engineering report. Be factual; never invent numbers you cannot read.`;
+
+export function picturePrompt(kind: "caption" | "alt" | "describe", context: string): string {
+  const ctx = context ? `\n\nText around the picture in the document (for context):\n"""${context}"""` : "";
+  if (kind === "caption") return `Write a concise figure caption (max 20 words, no "Figure X:" prefix, no quotes) for this picture.${ctx}`;
+  if (kind === "alt")
+    return `Write alt text for this picture for screen-reader users: one or two plain sentences (max 250 characters) saying what it shows and, for charts, the main trend. No "Image of" prefix.${ctx}`;
+  return `Describe and analyse this picture for the report author. For charts/plots: axes, units, series, main trends, notable values and anything suspicious. For photos/diagrams: what is shown and relevant technical observations. Use short Markdown bullets.${ctx}`;
+}
+
+/* ---------------------------------------------------------------- templates */
+
+export function templateFillPrompt(outline: string, notes: string): string {
+  return `Fill in this report template using ONLY the information in the notes. Keep every heading and table structure of the template. Replace [placeholders] with facts from the notes; keep a [placeholder] where the notes don't say. Do not invent numbers.
+
+--- TEMPLATE START ---
+${outline}
+--- TEMPLATE END ---
+
+--- NOTES START ---
+${notes}
+--- NOTES END ---`;
 }

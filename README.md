@@ -14,6 +14,14 @@ Zee AI for Word is a Word task-pane add-in for Windows, Mac and Word on the web.
 | **Translate** | 16 languages. Your last choice is remembered. |
 | **Draft** | Writes new content from a free-form request, such as "Draft an NDA non-compete clause" or "Generate an introduction section". You can set length and tone and use the selection or the start of the document as context. |
 | **My actions** | Your own one-click actions ("Mine" in the toolbar), for example *Well test summary* or *Client-ready tone*. Each one either edits the selection or writes new text after it. Add and edit them in Settings. |
+| **Tables** | With the cursor in a table you can *explain* it, *write a commentary* below it, or *clean it up*. Clean-up fixes spelling, units, capitalisation and date formats, changes only the affected cells and keeps their formatting. A safety check discards any proposed change that would alter a number. *Turn notes into a table* builds a table from selected text. |
+| **Consistency check** | Review → Consistency check scans the whole document for mismatched units (bbl/d vs BOPD), names (W-12 vs Well 12), numbers, dates, abbreviations and terms. Each finding points to its paragraph and can become a Word comment. |
+| **Check against a reference** | Review → Check against a reference… compares the document with a procedure, standard or earlier report (PDF, DOCX, TXT, MD or CSV). It lists contradictions, missing requirements and outdated values, which can become comments. |
+| **Pictures** | Select a picture or chart to write a caption (inserted below it in Word's Caption style), generate alt text, or describe and analyse a chart. Gemini reads the image itself. |
+| **Report templates** | Daily production report, ESP failure analysis (RCA), well test report, MOC, technical memo and meeting minutes. Each is inserted with Word heading styles, so References → Table of Contents works. With notes selected, AI fills the template in from them. |
+| **Ribbon, right-click & shortcuts** | Home → Zee AI → **Quick actions**, the **Zee AI** entry in the right-click menu, and Ctrl+Alt+Shift+**R** (rewrite), **G** (grammar), **S** (summarize), **K** (consistency) and **Z** (open the pane). They open the pane with the usual preview, and nothing changes without a click. These need a Word version with shared-runtime support (Microsoft 365). |
+| **Cheaper bulk work** | Whole-document proofreading and long summaries use Flash-Lite (this can be switched off in Settings → Cost). Repeated requests are answered from a session cache at no cost. |
+| **Team setup** | Settings → Team setup exports your glossary and quick actions as a team file. Colleagues import that file or load it from a URL or the team proxy (`TEAM_CONFIG`). It refreshes every time the pane opens. |
 | **Chat** | Streaming answers (`streamGenerateContent?alt=sse`). The chat can read nothing, the selection or the whole document. Long documents are trimmed in the middle. History is saved **per document**. |
 | **Track Changes** | The header toggle records Zee AI's edits as Word revisions you accept or reject in the Review tab. Needs Word for Microsoft 365 / 2021+. Your own Track Changes setting is restored afterwards. |
 | **Keeps formatting** | Edits change only the words that differ, so bold words, links, styles and comments in the rest of the text stay. If a paragraph changed too much, only that paragraph's text is replaced and its style is kept. |
@@ -105,6 +113,17 @@ src/
   utils/                     Pure, unit-tested helpers: diff, edit planner, chunks/citations, markdown→HTML, text, SSE, history
   __tests__/                 Vitest tests (run by every build)
 ```
+
+## Shared code with the Excel add-in
+
+`src/shared/` holds the host-agnostic modules: the Gemini client, Google sign-in, the SSE parser and the hash. Edit them there, then sync them to the other add-in:
+
+```bat
+node scripts\sync-shared.mjs D:\ADD_IN_CLAUDE --check   :: list differences
+node scripts\sync-shared.mjs D:\ADD_IN_CLAUDE           :: copy src\shared into the Excel project
+```
+
+See `src/shared/README.md`. The Excel add-in still imports its own copies until it is switched over.
 
 ## Lessons carried over from the Excel add-in
 

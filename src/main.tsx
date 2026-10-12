@@ -2,6 +2,7 @@ import { Component, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import App from "./App";
 import "./styles.css";
+import { registerCommands } from "./services/commands";
 
 declare global {
   interface Window {
@@ -85,7 +86,10 @@ log("main", "main.tsx executing");
 // Office.onReady resolves both inside Office and in a plain browser (host = null),
 // so the UI can also be previewed at https://localhost:3200/taskpane.html.
 if (typeof Office !== "undefined") {
-  Office.onReady(() => render("Office.onReady"));
+  Office.onReady(() => {
+    registerCommands(); // ribbon menu, right-click menu, keyboard shortcuts (shared runtime)
+    render("Office.onReady");
+  });
   // Safety net: never leave the pane blank if Office.onReady stalls.
   setTimeout(() => {
     if (!rendered) log("warn", "Office.onReady did not resolve within 8s – rendering anyway");

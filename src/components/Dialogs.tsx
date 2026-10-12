@@ -11,10 +11,15 @@ import {
   Dropdown,
   Field,
   Option,
+  Radio,
+  RadioGroup,
+  Spinner,
   Textarea,
 } from "@fluentui/react-components";
 import { DiffView } from "./DiffView";
-import { TONES, type DraftLength, type ToneId } from "../services/prompts";
+import { DEFAULT_REFERENCE_QUESTION, TONES, type DraftLength, type ToneId } from "../services/prompts";
+import type { ReportTemplate } from "../services/templates";
+import { readReferenceFile, type ReferencePayload } from "../utils/files";
 
 /* ------------------------------------------------------------------ confirm (optionally with a diff) */
 
@@ -136,6 +141,132 @@ export function DraftDialog({ open, hasSelection, onClose, onRun }: { open: bool
           <DialogActions>
             <Button appearance="primary" disabled={!request.trim()} onClick={submit}>
               Draft
+            </Button>
+            <Button onClick={onClose}>Cancel</Button>
+          </DialogActions>
+        </DialogBody>
+      </DialogSurface>
+    </Dialog>
+  );
+}
+
+/* ------------------------------------------------------------------ check against a reference */
+
+export interface ReferenceChoice {
+  reference: ReferencePayload;
+  question: string;
+}
+
+export function ReferenceDialog({ open, onClose, onRun }: { open: boolean; onClose: () => void; onRun: (c: ReferenceChoice) => void }) {
+  const [file, setFile] = useState<ReferencePayload | null>(null);
+  const [error, setError] = useState("");
+  const [reading, setReading] = useState(false);
+  const [question, setQuestion] = useState(DEFAULT_REFERENCE_QUESTION);
+  useEffect(() => {
+    if (open) {
+      setFile(null);
+      setError("");
+    }
+  }, [open]);
+
+  const pick = async (f: File | undefined) => {
+    if (!f) return;
+    setReading(true);
+    setError("");
+    try {
+      setFile(await readReferenceFile(f));
+    } catch (e) {
+      setFile(null);
+      setError((e as Error).message);
+    } finally {
+      setReading(false);
+    }
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={(_, d) => !d.open && onClose()}>
+      <DialogSurface className="zee-dialog">
+        <DialogBody>
+          <DialogTitle>Check against a reference</DialogTitle>
+          <DialogContent className="zee-form">
+            <Field
+              label="Reference document"
+              hint="A procedure, standard, specification or earlier report: PDF, DOCX, TXT/MD/CSV (max 15 MB). It is sent to Gemini for this check only."
+              validationMessage={error || undefined}
+            >
+              <div className="zee-file-pick">
+                <input type="file" accept=".pdf,.docx,.txt,.md,.csv,.json,.xml,.html,image/*" onChange={(e) => pick(e.target.files?.[0])} />
+                {reading && <Spinner size="tiny" label="Reading…" />}
+                {file && <span className="zee-chip">📎 {file.name}</span>}
+              </div>
+            </Field>
+            <Field label="What should be checked?">
+              <Textarea value={question} rows={4} resize="vertical" onChange={(_, d) => setQuestion(d.value)} />
+            </Field>
+            <p className="zee-muted">Findings point to the paragraph in your document and can be added as Word comments.</p>
+          </DialogContent>
+          <DialogActions>
+            <Button appearance="primary" disabled={!file || !question.trim()} onClick={() => file && onRun({ reference: file, question })}>
+              Check
+            </Button>
+            <Button onClick={onClose}>Cancel</Button>
+          </DialogActions>
+        </DialogBody>
+      </DialogSurface>
+    </Dialog>
+  );
+}
+
+/* ------------------------------------------------------------------ report templates */
+
+export interface TemplateChoice {
+  template: ReportTemplate;
+  fillFromSelection: boolean;
+  location: "after" | "end";
+}
+
+export function TemplateDialog({
+  template,
+  hasSelection,
+  onClose,
+  onRun,
+}: {
+  template: ReportTemplate | null;
+  hasSelection: boolean;
+  onClose: () => void;
+  onRun: (c: TemplateChoice) => void;
+}) {
+  const [fill, setFill] = useState(false);
+  const [location, setLocation] = useState<"after" | "end">("after");
+  useEffect(() => {
+    if (template) setFill(hasSelection);
+  }, [template, hasSelection]);
+
+  return (
+    <Dialog open={!!template} onOpenChange={(_, d) => !d.open && onClose()}>
+      <DialogSurface className="zee-dialog">
+        <DialogBody>
+          <DialogTitle>{template?.name}</DialogTitle>
+          <DialogContent className="zee-form">
+            <p className="zee-dialog-text">{template?.description}</p>
+            <pre className="zee-template-preview">{template?.outline}</pre>
+            <Checkbox
+              checked={fill}
+              disabled={!hasSelection}
+              onChange={(_, d) => setFill(!!d.checked)}
+              label={hasSelection ? "Fill it in with AI from the selected notes" : "Select your notes first to have AI fill it in"}
+            />
+            <RadioGroup layout="horizontal" value={location} onChange={(_, d) => setLocation(d.value as "after" | "end")}>
+              <Radio value="after" label="At the cursor" />
+              <Radio value="end" label="At the end of the document" />
+            </RadioGroup>
+            <p className="zee-muted">
+              {fill ? "The filled-in report appears in the chat first, so you can review it before inserting." : "The empty template is inserted with Word heading styles – References → Table of Contents works right away."}
+            </p>
+          </DialogContent>
+          <DialogActions>
+            <Button appearance="primary" onClick={() => template && onRun({ template, fillFromSelection: fill && hasSelection, location })}>
+              {fill && hasSelection ? "Fill in with AI" : "Insert template"}
             </Button>
             <Button onClick={onClose}>Cancel</Button>
           </DialogActions>

@@ -120,7 +120,8 @@ function InsertBar({ message }: { message: ChatMessage }) {
   );
 }
 
-function IssueList({ issues, empty }: { issues: GrammarIssue[]; empty: string }) {
+function IssueList({ issues, empty, style = "fix" }: { issues: GrammarIssue[]; empty: string; style?: "fix" | "finding" }) {
+  const actions = useInsertActions();
   if (!issues.length)
     return (
       <div className="zee-issues">
@@ -135,8 +136,33 @@ function IssueList({ issues, empty }: { issues: GrammarIssue[]; empty: string })
       <ul>
         {issues.slice(0, 200).map((i, k) => (
           <li key={k}>
-            <del>{i.original}</del> → <ins>{i.fix}</ins> <span className="zee-issue-type">{i.type}</span>
-            {i.reason && <span className="zee-muted"> – {i.reason}</span>}
+            {i.paragraph ? (
+              <button type="button" className="zee-para-chip" title="Show this paragraph" onClick={() => actions.goToParagraph(i.paragraph!)}>
+                ¶{i.paragraph}
+              </button>
+            ) : null}
+            {style === "finding" ? (
+              <>
+                <span className="zee-issue-type">{i.type}</span> {i.reason}
+                {i.original && (
+                  <>
+                    {" "}
+                    <del>{i.original}</del>
+                  </>
+                )}
+                {i.fix && (
+                  <>
+                    {" "}
+                    → <ins>{i.fix}</ins>
+                  </>
+                )}
+              </>
+            ) : (
+              <>
+                <del>{i.original}</del> → <ins>{i.fix}</ins> <span className="zee-issue-type">{i.type}</span>
+                {i.reason && <span className="zee-muted"> – {i.reason}</span>}
+              </>
+            )}
           </li>
         ))}
       </ul>
@@ -168,6 +194,91 @@ function CommentButton({ message, primary }: { message: ChatMessage; primary?: b
         {message.commented ? "Comments added" : "Add as comments"}
       </Button>
     </Tooltip>
+  );
+}
+
+/** Table clean-up proposal: changed cells highlighted (old value struck through), Apply writes only those cells. */
+function TableProposal({ message }: { message: ChatMessage }) {
+  const actions = useInsertActions();
+  const [working, setWorking] = useState(false);
+  const edit = message.tableEdit!;
+  const changed = edit.after.reduce((n, r, i) => n + r.filter((v, j) => v.trim() !== (edit.before[i]?.[j] ?? "").trim()).length, 0);
+  return (
+    <>
+      <strong>{changed === 1 ? "1 cell changes" : `${changed} cells change`}</strong>
+      <table className="zee-grid-preview">
+        <tbody>
+          {edit.after.map((r, i) => (
+            <tr key={i}>
+              {r.map((v, j) => {
+                const old = edit.before[i]?.[j] ?? "";
+                const diff = v.trim() !== old.trim();
+                return (
+                  <td key={j} className={diff ? "zee-cell-changed" : undefined}>
+                    {diff && <del>{old || "∅"}</del>}
+                    {v}
+                  </td>
+                );
+              })}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {edit.notes.length > 0 && (
+        <ul className="zee-actions">
+          {edit.notes.map((n, i) => (
+            <li key={i}>{n}</li>
+          ))}
+        </ul>
+      )}
+      <div className="zee-insert-bar">
+        <Button
+          size="small"
+          appearance="primary"
+          disabled={!changed || !actions.canInsert || working || !!message.applied}
+          icon={working ? <Spinner size="extra-tiny" /> : <Checkmark16Regular />}
+          onClick={async () => {
+            setWorking(true);
+            try {
+              await actions.applyTable(message);
+            } finally {
+              setWorking(false);
+            }
+          }}
+        >
+          {message.applied ? "Applied" : "Apply to table"}
+        </Button>
+        <span className="zee-muted">Only the changed cells are written; formatting stays.</span>
+      </div>
+    </>
+  );
+}
+
+function PictureApplyBar({ message }: { message: ChatMessage }) {
+  const actions = useInsertActions();
+  const [working, setWorking] = useState(false);
+  const kind = message.pictureResult!.kind;
+  return (
+    <div className="zee-insert-bar">
+      <Button
+        size="small"
+        appearance="primary"
+        disabled={!actions.canInsert || working || !!message.applied}
+        icon={working ? <Spinner size="extra-tiny" /> : <Checkmark16Regular />}
+        onClick={async () => {
+          setWorking(true);
+          try {
+            await actions.applyPicture(message);
+          } finally {
+            setWorking(false);
+          }
+        }}
+      >
+        {message.applied ? "Applied" : kind === "caption" ? "Insert caption below picture" : "Set as alt text"}
+      </Button>
+      <CopyButton text={message.text} />
+      <span className="zee-muted">Keep the picture selected.</span>
+    </div>
   );
 }
 
@@ -277,10 +388,16 @@ function MessageBubbleImpl({ message }: { message: ChatMessage }) {
     <div className="zee-msg zee-msg-assistant">
       {message.title && <div className="zee-msg-title">{message.title}</div>}
       <div className={`zee-bubble ${plain ? "zee-plain" : "zee-markdown"}`}>
-        {isDocFindings ? (
+        {message.tableEdit && done ? (
+          <TableProposal message={message} />
+        ) : isDocFindings ? (
           <>
             <p className="zee-dialog-text">{message.text}</p>
-            <IssueList issues={message.issues ?? []} empty="No spelling or grammar issues found in the document." />
+            <IssueList
+              issues={message.issues ?? []}
+              style={message.issueStyle ?? "fix"}
+              empty={message.issueStyle === "finding" ? "No problems found." : "No spelling or grammar issues found in the document."}
+            />
           </>
         ) : isEdit ? (
           <>
@@ -305,7 +422,8 @@ function MessageBubbleImpl({ message }: { message: ChatMessage }) {
           <CommentButton message={message} primary />
         </div>
       )}
-      {!isDocFindings && hasResult && !noIssues && <InsertBar message={message} />}
+      {message.pictureResult && hasResult && <PictureApplyBar message={message} />}
+      {!isDocFindings && !message.tableEdit && !message.pictureResult && hasResult && !noIssues && <InsertBar message={message} />}
       {isEdit && message.issues && !noIssues && (
         <div className="zee-insert-bar">
           <CommentButton message={message} />

@@ -7,14 +7,14 @@
   xmlns:ov="http://schemas.microsoft.com/office/taskpaneappversionoverrides"
   xsi:type="TaskPaneApp">
   <Id>b11d1949-ce15-4782-a44d-becdb2eb4652</Id>
-  <Version>1.1.0.0</Version>
+  <Version>1.2.0.0</Version>
   <ProviderName>Zee AI</ProviderName>
   <DefaultLocale>en-US</DefaultLocale>
   <DisplayName DefaultValue="Zee AI for Word"/>
   <Description DefaultValue="Gemini-powered writing copilot for Word: rewrite, fix grammar, change tone, summarize, translate and draft text, with a diff preview before anything changes."/>
-  <IconUrl DefaultValue="https://Zeexx99.github.io/zee-ai-word/assets/icon-32.png"/>
-  <HighResolutionIconUrl DefaultValue="https://Zeexx99.github.io/zee-ai-word/assets/icon-64.png"/>
-  <SupportUrl DefaultValue="https://Zeexx99.github.io/zee-ai-word/taskpane.html"/>
+  <IconUrl DefaultValue="https://zeexx99.github.io/zee-ai-word/assets/icon-32.png"/>
+  <HighResolutionIconUrl DefaultValue="https://zeexx99.github.io/zee-ai-word/assets/icon-64.png"/>
+  <SupportUrl DefaultValue="https://zeexx99.github.io/zee-ai-word/taskpane.html"/>
   <AppDomains>
     <AppDomain>https://accounts.google.com</AppDomain>
   </AppDomains>
@@ -27,19 +27,23 @@
     </Sets>
   </Requirements>
   <DefaultSettings>
-    <SourceLocation DefaultValue="https://Zeexx99.github.io/zee-ai-word/taskpane.html"/>
+    <SourceLocation DefaultValue="https://zeexx99.github.io/zee-ai-word/taskpane.html"/>
   </DefaultSettings>
   <Permissions>ReadWriteDocument</Permissions>
   <VersionOverrides xmlns="http://schemas.microsoft.com/office/taskpaneappversionoverrides" xsi:type="VersionOverridesV1_0">
     <Hosts>
       <Host xsi:type="Document">
+        <!-- Shared runtime: ribbon/right-click commands and keyboard shortcuts run in the task pane's JavaScript. -->
+        <Runtimes>
+          <Runtime resid="Taskpane.Url" lifetime="long"/>
+        </Runtimes>
         <DesktopFormFactor>
           <GetStarted>
             <Title resid="GetStarted.Title"/>
             <Description resid="GetStarted.Description"/>
             <LearnMoreUrl resid="GetStarted.LearnMoreUrl"/>
           </GetStarted>
-          <FunctionFile resid="Commands.Url"/>
+          <FunctionFile resid="Taskpane.Url"/>
           <ExtensionPoint xsi:type="PrimaryCommandSurface">
             <OfficeTab id="TabHome">
               <Group id="ZeeAIWord.Group">
@@ -65,32 +69,197 @@
                     <SourceLocation resid="Taskpane.Url"/>
                   </Action>
                 </Control>
+                <Control xsi:type="Menu" id="ZeeAIWord.QuickMenu">
+                  <Label resid="QuickMenu.Label"/>
+                  <Supertip>
+                    <Title resid="QuickMenu.Label"/>
+                    <Description resid="QuickMenu.Tip"/>
+                  </Supertip>
+                  <Icon>
+                    <bt:Image size="16" resid="Icon.16x16"/>
+                    <bt:Image size="32" resid="Icon.32x32"/>
+                    <bt:Image size="80" resid="Icon.80x80"/>
+                  </Icon>
+                  <Items>
+                    <Item id="ZeeAIWord.Ribbon.Rewrite">
+                      <Label resid="Cmd.Rewrite.Label"/>
+                      <Supertip>
+                        <Title resid="Cmd.Rewrite.Label"/>
+                        <Description resid="Cmd.Rewrite.Tip"/>
+                      </Supertip>
+                      <Icon>
+                        <bt:Image size="16" resid="Icon.16x16"/>
+                        <bt:Image size="32" resid="Icon.32x32"/>
+                        <bt:Image size="80" resid="Icon.80x80"/>
+                      </Icon>
+                      <Action xsi:type="ExecuteFunction">
+                        <FunctionName>zeeRewrite</FunctionName>
+                      </Action>
+                    </Item>
+                    <Item id="ZeeAIWord.Ribbon.Grammar">
+                      <Label resid="Cmd.Grammar.Label"/>
+                      <Supertip>
+                        <Title resid="Cmd.Grammar.Label"/>
+                        <Description resid="Cmd.Grammar.Tip"/>
+                      </Supertip>
+                      <Icon>
+                        <bt:Image size="16" resid="Icon.16x16"/>
+                        <bt:Image size="32" resid="Icon.32x32"/>
+                        <bt:Image size="80" resid="Icon.80x80"/>
+                      </Icon>
+                      <Action xsi:type="ExecuteFunction">
+                        <FunctionName>zeeGrammar</FunctionName>
+                      </Action>
+                    </Item>
+                    <Item id="ZeeAIWord.Ribbon.Summarize">
+                      <Label resid="Cmd.Summarize.Label"/>
+                      <Supertip>
+                        <Title resid="Cmd.Summarize.Label"/>
+                        <Description resid="Cmd.Summarize.Tip"/>
+                      </Supertip>
+                      <Icon>
+                        <bt:Image size="16" resid="Icon.16x16"/>
+                        <bt:Image size="32" resid="Icon.32x32"/>
+                        <bt:Image size="80" resid="Icon.80x80"/>
+                      </Icon>
+                      <Action xsi:type="ExecuteFunction">
+                        <FunctionName>zeeSummarize</FunctionName>
+                      </Action>
+                    </Item>
+                    <Item id="ZeeAIWord.Ribbon.Consistency">
+                      <Label resid="Cmd.Consistency.Label"/>
+                      <Supertip>
+                        <Title resid="Cmd.Consistency.Label"/>
+                        <Description resid="Cmd.Consistency.Tip"/>
+                      </Supertip>
+                      <Icon>
+                        <bt:Image size="16" resid="Icon.16x16"/>
+                        <bt:Image size="32" resid="Icon.32x32"/>
+                        <bt:Image size="80" resid="Icon.80x80"/>
+                      </Icon>
+                      <Action xsi:type="ExecuteFunction">
+                        <FunctionName>zeeConsistency</FunctionName>
+                      </Action>
+                    </Item>
+                  </Items>
+                </Control>
               </Group>
             </OfficeTab>
+          </ExtensionPoint>
+          <ExtensionPoint xsi:type="ContextMenu">
+            <OfficeMenu id="ContextMenuText">
+              <Control xsi:type="Menu" id="ZeeAIWord.ContextMenu">
+                <Label resid="ContextMenu.Label"/>
+                <Supertip>
+                  <Title resid="ContextMenu.Label"/>
+                  <Description resid="QuickMenu.Tip"/>
+                </Supertip>
+                <Icon>
+                  <bt:Image size="16" resid="Icon.16x16"/>
+                  <bt:Image size="32" resid="Icon.32x32"/>
+                  <bt:Image size="80" resid="Icon.80x80"/>
+                </Icon>
+                <Items>
+                  <Item id="ZeeAIWord.Context.Rewrite">
+                    <Label resid="Cmd.Rewrite.Label"/>
+                    <Supertip>
+                      <Title resid="Cmd.Rewrite.Label"/>
+                      <Description resid="Cmd.Rewrite.Tip"/>
+                    </Supertip>
+                    <Icon>
+                      <bt:Image size="16" resid="Icon.16x16"/>
+                      <bt:Image size="32" resid="Icon.32x32"/>
+                      <bt:Image size="80" resid="Icon.80x80"/>
+                    </Icon>
+                    <Action xsi:type="ExecuteFunction">
+                      <FunctionName>zeeRewrite</FunctionName>
+                    </Action>
+                  </Item>
+                  <Item id="ZeeAIWord.Context.Grammar">
+                    <Label resid="Cmd.Grammar.Label"/>
+                    <Supertip>
+                      <Title resid="Cmd.Grammar.Label"/>
+                      <Description resid="Cmd.Grammar.Tip"/>
+                    </Supertip>
+                    <Icon>
+                      <bt:Image size="16" resid="Icon.16x16"/>
+                      <bt:Image size="32" resid="Icon.32x32"/>
+                      <bt:Image size="80" resid="Icon.80x80"/>
+                    </Icon>
+                    <Action xsi:type="ExecuteFunction">
+                      <FunctionName>zeeGrammar</FunctionName>
+                    </Action>
+                  </Item>
+                  <Item id="ZeeAIWord.Context.Summarize">
+                    <Label resid="Cmd.Summarize.Label"/>
+                    <Supertip>
+                      <Title resid="Cmd.Summarize.Label"/>
+                      <Description resid="Cmd.Summarize.Tip"/>
+                    </Supertip>
+                    <Icon>
+                      <bt:Image size="16" resid="Icon.16x16"/>
+                      <bt:Image size="32" resid="Icon.32x32"/>
+                      <bt:Image size="80" resid="Icon.80x80"/>
+                    </Icon>
+                    <Action xsi:type="ExecuteFunction">
+                      <FunctionName>zeeSummarize</FunctionName>
+                    </Action>
+                  </Item>
+                  <Item id="ZeeAIWord.Context.Consistency">
+                    <Label resid="Cmd.Consistency.Label"/>
+                    <Supertip>
+                      <Title resid="Cmd.Consistency.Label"/>
+                      <Description resid="Cmd.Consistency.Tip"/>
+                    </Supertip>
+                    <Icon>
+                      <bt:Image size="16" resid="Icon.16x16"/>
+                      <bt:Image size="32" resid="Icon.32x32"/>
+                      <bt:Image size="80" resid="Icon.80x80"/>
+                    </Icon>
+                    <Action xsi:type="ExecuteFunction">
+                      <FunctionName>zeeConsistency</FunctionName>
+                    </Action>
+                  </Item>
+                </Items>
+              </Control>
+            </OfficeMenu>
           </ExtensionPoint>
         </DesktopFormFactor>
       </Host>
     </Hosts>
     <Resources>
       <bt:Images>
-        <bt:Image id="Icon.16x16" DefaultValue="https://Zeexx99.github.io/zee-ai-word/assets/icon-16.png"/>
-        <bt:Image id="Icon.32x32" DefaultValue="https://Zeexx99.github.io/zee-ai-word/assets/icon-32.png"/>
-        <bt:Image id="Icon.80x80" DefaultValue="https://Zeexx99.github.io/zee-ai-word/assets/icon-80.png"/>
+        <bt:Image id="Icon.16x16" DefaultValue="https://zeexx99.github.io/zee-ai-word/assets/icon-16.png"/>
+        <bt:Image id="Icon.32x32" DefaultValue="https://zeexx99.github.io/zee-ai-word/assets/icon-32.png"/>
+        <bt:Image id="Icon.80x80" DefaultValue="https://zeexx99.github.io/zee-ai-word/assets/icon-80.png"/>
       </bt:Images>
       <bt:Urls>
-        <bt:Url id="GetStarted.LearnMoreUrl" DefaultValue="https://Zeexx99.github.io/zee-ai-word/taskpane.html"/>
-        <bt:Url id="Commands.Url" DefaultValue="https://Zeexx99.github.io/zee-ai-word/commands.html"/>
-        <bt:Url id="Taskpane.Url" DefaultValue="https://Zeexx99.github.io/zee-ai-word/taskpane.html"/>
+        <bt:Url id="GetStarted.LearnMoreUrl" DefaultValue="https://zeexx99.github.io/zee-ai-word/taskpane.html"/>
+        <bt:Url id="Commands.Url" DefaultValue="https://zeexx99.github.io/zee-ai-word/commands.html"/>
+        <bt:Url id="Taskpane.Url" DefaultValue="https://zeexx99.github.io/zee-ai-word/taskpane.html"/>
       </bt:Urls>
       <bt:ShortStrings>
         <bt:String id="GetStarted.Title" DefaultValue="Zee AI for Word is ready"/>
         <bt:String id="Group.Label" DefaultValue="Zee AI"/>
         <bt:String id="TaskpaneButton.Label" DefaultValue="Zee AI"/>
+        <bt:String id="QuickMenu.Label" DefaultValue="Quick actions"/>
+        <bt:String id="ContextMenu.Label" DefaultValue="Zee AI"/>
+        <bt:String id="Cmd.Rewrite.Label" DefaultValue="Rewrite selection"/>
+        <bt:String id="Cmd.Grammar.Label" DefaultValue="Grammar check"/>
+        <bt:String id="Cmd.Summarize.Label" DefaultValue="Summarize"/>
+        <bt:String id="Cmd.Consistency.Label" DefaultValue="Consistency check"/>
       </bt:ShortStrings>
       <bt:LongStrings>
         <bt:String id="GetStarted.Description" DefaultValue="Open Zee AI from the Home tab, select some text and pick an action, or ask in the chat."/>
+        <bt:String id="QuickMenu.Tip" DefaultValue="Run a Zee AI action on the selection. The pane opens with a preview; nothing changes until you click Apply."/>
+        <bt:String id="Cmd.Rewrite.Tip" DefaultValue="Rewrite and polish the selected text (Ctrl+Alt+Shift+R). Shows a diff first."/>
+        <bt:String id="Cmd.Grammar.Tip" DefaultValue="Check grammar and spelling of the selection, or the whole document if nothing is selected (Ctrl+Alt+Shift+G)."/>
+        <bt:String id="Cmd.Summarize.Tip" DefaultValue="Summarize the selection, or the whole document if nothing is selected (Ctrl+Alt+Shift+S)."/>
+        <bt:String id="Cmd.Consistency.Tip" DefaultValue="Check the document for inconsistent units, names, numbers and dates (Ctrl+Alt+Shift+K)."/>
         <bt:String id="TaskpaneButton.Tooltip" DefaultValue="Open the Zee AI writing copilot: rewrite, grammar, tone, summarize, translate, drafting and a document-aware chat powered by Google Gemini."/>
       </bt:LongStrings>
     </Resources>
   </VersionOverrides>
+  <!-- Keyboard shortcuts (Word on Windows/Mac with shared runtime support). -->
+  <ExtendedOverrides Url="https://zeexx99.github.io/zee-ai-word/shortcuts.json"/>
 </OfficeApp>

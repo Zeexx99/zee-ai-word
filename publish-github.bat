@@ -45,6 +45,7 @@ if errorlevel 1 (
 echo   Checking that Zee AI for Word builds (type check + tests + build)...
 call npm run build >> publish-log.txt 2>&1
 if errorlevel 1 (
+  echo BUILD FAILED >> publish-log.txt
   echo [X] The build failed - nothing was uploaded. See publish-log.txt.
   goto end
 )
@@ -77,6 +78,7 @@ if /i not "%AUTO%"=="auto" start "" "https://github.com/%GHUSER%/%REPO%/settings
 echo.
 echo When the deploy is green, double-click use-online.bat
 echo Your add-in address: %SITE%/taskpane.html
+echo PUBLISH DONE >> publish-log.txt
 goto end
 
 :nogit
@@ -95,6 +97,7 @@ echo [X] No username entered.
 goto end
 
 :pushfailed
+echo PUSH FAILED >> publish-log.txt
 echo.
 echo [X] Upload failed. Common causes:
 echo     - the repository name or your username is misspelled

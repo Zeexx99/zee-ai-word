@@ -6,8 +6,10 @@
  * Secrets (wrangler secret put …):
  *   GEMINI_API_KEY  – your Google AI Studio key
  *   TEAM_TOKEN      – any long random string you give to your team (Settings → Team proxy)
- * Optional variable:
+ * Optional variables:
  *   ALLOWED_ORIGIN  – e.g. https://<user>.github.io (defaults to *)
+ *   TEAM_CONFIG     – a Zee AI team file (JSON from Settings → Team setup → Export). Served at /zee-config
+ *                     so everyone gets the same glossary and quick actions (Settings → Team setup → "proxy").
  */
 const UPSTREAM = "https://generativelanguage.googleapis.com";
 
@@ -28,10 +30,16 @@ export default {
     // Only model calls (/v1beta/models/<model>:<method>) and the model list (/v1beta/models).
     const isModelCall = /^\/v1beta\/models\/[\w.\-]+:(generateContent|streamGenerateContent|countTokens)$/.test(url.pathname);
     const isList = request.method === "GET" && url.pathname === "/v1beta/models";
-    if (!isModelCall && !isList) return json(404, "Not allowed");
+    const isConfig = request.method === "GET" && url.pathname === "/zee-config";
+    if (!isModelCall && !isList && !isConfig) return json(404, "Not allowed");
 
     const auth = request.headers.get("Authorization") || "";
     if (!env.TEAM_TOKEN || auth !== `Bearer ${env.TEAM_TOKEN}`) return json(401, "Invalid team token");
+
+    if (isConfig) {
+      if (!env.TEAM_CONFIG) return json(404, "No TEAM_CONFIG set on the proxy");
+      return new Response(env.TEAM_CONFIG, { status: 200, headers: { ...cors, "Content-Type": "application/json", "Cache-Control": "no-store" } });
+    }
 
     const upstream = new URL(url.pathname + url.search, UPSTREAM);
     const res = await fetch(upstream, {

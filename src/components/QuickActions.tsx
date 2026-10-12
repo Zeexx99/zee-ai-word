@@ -1,7 +1,11 @@
 import { Menu, MenuButton, MenuDivider, MenuGroupHeader, MenuItem, MenuList, MenuPopover, MenuTrigger, Toolbar, ToolbarButton, Tooltip } from "@fluentui/react-components";
 import {
   Compose20Regular,
+  DocumentBulletList20Regular,
+  DocumentCheckmark20Regular,
   Flash20Regular,
+  ImageSparkle20Regular,
+  Table20Regular,
   Emoji20Regular,
   Sparkle20Regular,
   TextBulletListSquare20Regular,
@@ -11,6 +15,7 @@ import {
 } from "@fluentui/react-icons";
 import { LANGUAGES, TONES, type SummaryStyle, type ToneId } from "../services/prompts";
 import type { CustomAction } from "../services/settingsService";
+import { TEMPLATES, type ReportTemplate } from "../services/templates";
 
 export interface QuickActionHandlers {
   onRewrite: () => void;
@@ -22,6 +27,11 @@ export interface QuickActionHandlers {
   onDraft: () => void;
   onCustom: (action: CustomAction) => void;
   onManageActions: () => void;
+  onTable: (action: "explain" | "commentary" | "clean" | "fromNotes") => void;
+  onConsistency: () => void;
+  onReference: () => void;
+  onPicture: (kind: "caption" | "alt" | "describe") => void;
+  onTemplate: (t: ReportTemplate) => void;
 }
 
 export function QuickActions(p: QuickActionHandlers & { disabled?: boolean; preferredLanguage: string; customActions: CustomAction[] }) {
@@ -123,12 +133,90 @@ export function QuickActions(p: QuickActionHandlers & { disabled?: boolean; pref
             <MenuGroupHeader>My quick actions</MenuGroupHeader>
             {p.customActions.length === 0 && <MenuItem disabled>No custom actions yet</MenuItem>}
             {p.customActions.map((a) => (
-              <MenuItem key={a.id} title={a.instruction} onClick={() => p.onCustom(a)} secondaryContent={a.mode === "replace" ? "edit" : "insert"}>
+              <MenuItem
+                key={a.id}
+                title={a.instruction}
+                onClick={() => p.onCustom(a)}
+                secondaryContent={`${a.id.startsWith("team-") ? "team · " : ""}${a.mode === "replace" ? "edit" : "insert"}`}
+              >
                 {a.name}
               </MenuItem>
             ))}
             <MenuDivider />
             <MenuItem onClick={p.onManageActions}>Add or edit actions…</MenuItem>
+          </MenuList>
+        </MenuPopover>
+      </Menu>
+
+      <Menu>
+        <MenuTrigger disableButtonEnhancement>
+          <MenuButton size="small" appearance="subtle" icon={<Table20Regular />} disabled={p.disabled} title="Table" aria-label="Table">
+            <span className="zee-quick-label">Table</span>
+          </MenuButton>
+        </MenuTrigger>
+        <MenuPopover>
+          <MenuList>
+            <MenuGroupHeader>Cursor in a table</MenuGroupHeader>
+            <MenuItem onClick={() => p.onTable("explain")}>Explain this table</MenuItem>
+            <MenuItem onClick={() => p.onTable("commentary")}>Write commentary below it</MenuItem>
+            <MenuItem onClick={() => p.onTable("clean")} secondaryContent="keeps values">
+              Clean up table…
+            </MenuItem>
+            <MenuDivider />
+            <MenuGroupHeader>Notes selected</MenuGroupHeader>
+            <MenuItem onClick={() => p.onTable("fromNotes")}>Turn notes into a table</MenuItem>
+          </MenuList>
+        </MenuPopover>
+      </Menu>
+
+      <Menu>
+        <MenuTrigger disableButtonEnhancement>
+          <MenuButton size="small" appearance="subtle" icon={<DocumentCheckmark20Regular />} disabled={p.disabled} title="Review" aria-label="Review">
+            <span className="zee-quick-label">Review</span>
+          </MenuButton>
+        </MenuTrigger>
+        <MenuPopover>
+          <MenuList>
+            <MenuItem onClick={p.onConsistency} secondaryContent="units, names, numbers">
+              Consistency check
+            </MenuItem>
+            <MenuItem onClick={p.onReference} secondaryContent="PDF / DOCX">
+              Check against a reference…
+            </MenuItem>
+          </MenuList>
+        </MenuPopover>
+      </Menu>
+
+      <Menu>
+        <MenuTrigger disableButtonEnhancement>
+          <MenuButton size="small" appearance="subtle" icon={<ImageSparkle20Regular />} disabled={p.disabled} title="Picture" aria-label="Picture">
+            <span className="zee-quick-label">Picture</span>
+          </MenuButton>
+        </MenuTrigger>
+        <MenuPopover>
+          <MenuList>
+            <MenuGroupHeader>Select a picture or chart first</MenuGroupHeader>
+            <MenuItem onClick={() => p.onPicture("caption")}>Write a caption</MenuItem>
+            <MenuItem onClick={() => p.onPicture("alt")}>Generate alt text</MenuItem>
+            <MenuItem onClick={() => p.onPicture("describe")}>Describe / analyse chart</MenuItem>
+          </MenuList>
+        </MenuPopover>
+      </Menu>
+
+      <Menu>
+        <MenuTrigger disableButtonEnhancement>
+          <MenuButton size="small" appearance="subtle" icon={<DocumentBulletList20Regular />} disabled={p.disabled} title="Templates" aria-label="Templates">
+            <span className="zee-quick-label">Templates</span>
+          </MenuButton>
+        </MenuTrigger>
+        <MenuPopover className="zee-lang-popover">
+          <MenuList>
+            <MenuGroupHeader>Report templates</MenuGroupHeader>
+            {TEMPLATES.map((t) => (
+              <MenuItem key={t.id} title={t.description} onClick={() => p.onTemplate(t)}>
+                {t.name}
+              </MenuItem>
+            ))}
           </MenuList>
         </MenuPopover>
       </Menu>

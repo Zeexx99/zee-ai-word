@@ -30,6 +30,10 @@ import type { UsageTotals } from "../App";
 import { openExternal } from "./insertActions";
 import { CustomActionsEditor } from "./CustomActionsEditor";
 import { supportsWordApi } from "../services/wordService";
+import { clearResponseCache, responseCacheSize } from "../services/geminiService";
+import { downloadText, exportTeamConfig, fetchTeamConfig } from "../services/teamService";
+import { parseTeamConfig } from "../utils/teamConfig";
+import { copyText } from "./insertActions";
 
 interface Props {
   open: boolean;
@@ -68,6 +72,13 @@ export function SettingsDrawer({ open, settings, usage, undoDepth, onClearUndo, 
     if (open && focus === "actions") window.setTimeout(() => actionsRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 250);
   }, [open, focus]);
   const canTrack = supportsWordApi("1.4");
+  const [teamUrl, setTeamUrl] = useState(settings.teamSource === "file" ? "" : settings.teamSource);
+  const [teamBusy, setTeamBusy] = useState(false);
+  const [teamStatus, setTeamStatus] = useState<Status>(null);
+  const [cacheSize, setCacheSize] = useState(0);
+  useEffect(() => {
+    if (open) setCacheSize(responseCacheSize());
+  }, [open]);
   const [showKey, setShowKey] = useState(false);
   const [status, setStatus] = useState<Status>(null);
   const [testing, setTesting] = useState(false);
@@ -419,6 +430,94 @@ export function SettingsDrawer({ open, settings, usage, undoDepth, onClearUndo, 
         <Divider />
 
         <section>
+          <h3>Team setup</h3>
+          <p className="zee-muted">
+            Share one glossary and set of quick actions with your team. Team terms and actions are added to your own (marked “team” under Mine).
+          </p>
+          {settings.team ? (
+            <MessageBar intent="success">
+              <MessageBarBody>
+                Team config{settings.team.name ? ` “${settings.team.name}”` : ""}: {settings.team.customActions.length} action{settings.team.customActions.length === 1 ? "" : "s"},{" "}
+                {settings.team.protectedTerms.split(/[,;\n]+/).filter((t) => t.trim()).length} terms
+                {settings.teamSource ? ` · from ${settings.teamSource === "file" ? "a file" : settings.teamSource === "proxy" ? "the team proxy" : "a URL"}` : ""}
+                {settings.teamLoadedAt ? ` · ${new Date(settings.teamLoadedAt).toLocaleString()}` : ""}
+              </MessageBarBody>
+            </MessageBar>
+          ) : null}
+          <Field label="Load from an address" hint='An https link to a team file (e.g. a raw GitHub file), or type "proxy" to load it from your team proxy. Reloaded each time the pane opens.'>
+            <div className="zee-row">
+              <Input className="zee-grow" value={teamUrl} placeholder="https://… or proxy" onChange={(_, d) => setTeamUrl(d.value)} />
+              <Button
+                disabled={!teamUrl.trim() || teamBusy}
+                icon={teamBusy ? <Spinner size="tiny" /> : undefined}
+                onClick={async () => {
+                  setTeamBusy(true);
+                  try {
+                    const team = await fetchTeamConfig(teamUrl, settings);
+                    onChange({ team, teamSource: teamUrl.trim(), teamLoadedAt: Date.now() });
+                    setTeamStatus({ intent: "success", text: `Team config loaded: ${team.customActions.length} actions.` });
+                  } catch (e) {
+                    setTeamStatus({ intent: "error", text: (e as Error).message });
+                  } finally {
+                    setTeamBusy(false);
+                  }
+                }}
+              >
+                Load
+              </Button>
+            </div>
+          </Field>
+          <div className="zee-row">
+            <label className="zee-file-pick">
+              <span className="zee-muted">Import a team file:</span>
+              <input
+                type="file"
+                accept=".json,application/json"
+                onChange={async (e) => {
+                  const f = e.target.files?.[0];
+                  if (!f) return;
+                  try {
+                    const team = parseTeamConfig(await f.text());
+                    onChange({ team, teamSource: "file", teamLoadedAt: Date.now() });
+                    setTeamStatus({ intent: "success", text: `Imported “${f.name}”: ${team.customActions.length} actions.` });
+                  } catch (err) {
+                    setTeamStatus({ intent: "error", text: (err as Error).message });
+                  }
+                }}
+              />
+            </label>
+          </div>
+          <div className="zee-row">
+            <Button
+              size="small"
+              onClick={async () => {
+                const json = exportTeamConfig(settings, "Zee AI team");
+                const copied = await copyText(json);
+                const saved = downloadText("zee-ai-team.json", json);
+                setTeamStatus({
+                  intent: "info",
+                  text: `${saved ? "Saved zee-ai-team.json (check Downloads). " : ""}${copied ? "Also copied to the clipboard." : ""} Share it, or put it on GitHub / the team proxy (TEAM_CONFIG).`,
+                });
+              }}
+            >
+              Export my glossary &amp; actions
+            </Button>
+            {settings.team && (
+              <Button size="small" onClick={() => onChange({ team: null, teamSource: "", teamLoadedAt: 0 })}>
+                Remove team config
+              </Button>
+            )}
+          </div>
+          {teamStatus && (
+            <MessageBar intent={teamStatus.intent}>
+              <MessageBarBody>{teamStatus.text}</MessageBarBody>
+            </MessageBar>
+          )}
+        </section>
+
+        <Divider />
+
+        <section>
           <h3>Cost guard</h3>
           <Field label="Ask before sending prompts larger than (tokens)" hint="Default 20,000. 0 = never ask. ~4 characters ≈ 1 token.">
             <Input
@@ -432,6 +531,27 @@ export function SettingsDrawer({ open, settings, usage, undoDepth, onClearUndo, 
               }}
             />
           </Field>
+          <Switch
+            checked={settings.useBulkModel}
+            onChange={(_, d) => onChange({ useBulkModel: d.checked })}
+            label="Use a cheaper model for whole-document passes (proofreading, long summaries)"
+          />
+          <Field label="Bulk model" hint="Flash-Lite is the fastest and cheapest. The consistency and reference checks always use the main model.">
+            <Input value={settings.bulkModel} disabled={!settings.useBulkModel} onChange={(_, d) => onChange({ bulkModel: d.value })} />
+          </Field>
+          <div className="zee-row">
+            <span className="zee-muted">Repeated requests are answered from a session cache ({cacheSize} saved answers).</span>
+            <Button
+              size="small"
+              disabled={!cacheSize}
+              onClick={() => {
+                clearResponseCache();
+                setCacheSize(0);
+              }}
+            >
+              Clear cache
+            </Button>
+          </div>
         </section>
 
         <Divider />

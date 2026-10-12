@@ -87,9 +87,9 @@ body.zee-light {
 .zee-quick {
   padding: 2px 6px;
   border-bottom: 1px solid var(--zee-border);
-  flex-wrap: nowrap;
-  overflow-x: auto;
-  scrollbar-width: thin;
+  /* Two rows when narrow: edit actions, then create/check actions. */
+  flex-wrap: wrap;
+  row-gap: 0;
 }
 
 /* Narrow pane: icon-only quick actions (names stay in tooltips), so the toolbar keeps one line. */
@@ -705,4 +705,73 @@ body.zee-light {
 }
 .zee-dark .zee-track-on {
   color: #6fdc8c !important;
+}
+
+/* ---------------------------------------------------------------- table proposals, reference picker */
+
+.zee-grid-preview {
+  border-collapse: collapse;
+  font-size: 11.5px;
+  display: block;
+  overflow-x: auto;
+  max-width: 100%;
+  max-height: 260px;
+  margin: 4px 0 6px;
+}
+
+.zee-grid-preview td {
+  border: 1px solid var(--zee-border);
+  padding: 2px 6px;
+  white-space: nowrap;
+  background: var(--zee-bg);
+  vertical-align: top;
+}
+
+.zee-grid-preview td.zee-cell-changed {
+  background: rgba(10, 125, 50, 0.1);
+}
+
+.zee-grid-preview td.zee-cell-changed del {
+  display: block;
+  color: #a3271c;
+}
+
+.zee-dark .zee-grid-preview td.zee-cell-changed del {
+  color: #ffaaa2;
+}
+
+.zee-file-pick {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.zee-file-pick input[type="file"] {
+  font-size: 12px;
+  max-width: 100%;
+}
+
+.zee-template-preview {
+  white-space: pre-wrap;
+  font-family: Consolas, "Courier New", monospace;
+  font-size: 11px;
+  max-height: 200px;
+  overflow-y: auto;
+  background: var(--zee-code-bg);
+  border: 1px solid var(--zee-border);
+  border-radius: 6px;
+  padding: 6px 8px;
+  margin: 0;
+}
+
+.zee-para-chip {
+  font-size: 10.5px;
+  border: 1px solid var(--zee-border);
+  border-radius: 999px;
+  padding: 0 5px;
+  margin-right: 4px;
+  cursor: pointer;
+  background: var(--zee-bg);
+  color: inherit;
 }
