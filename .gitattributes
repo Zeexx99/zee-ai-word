@@ -1,0 +1,9 @@
+# Default: text files stored with LF (stops the "LF will be replaced by CRLF" warnings).
+# (Order matters: later lines override earlier ones, so the general rule comes first.)
+* text=auto eol=lf
+# Windows batch / PowerShell scripts must keep CRLF line endings (labels and GOTO break with LF).
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+*.png binary
+*.ico binary

@@ -1,0 +1,472 @@
+import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  Button,
+  Combobox,
+  Divider,
+  DrawerBody,
+  DrawerHeader,
+  DrawerHeaderTitle,
+  Dropdown,
+  Field,
+  Input,
+  Link,
+  MessageBar,
+  MessageBarBody,
+  Option,
+  OptionGroup,
+  OverlayDrawer,
+  Radio,
+  RadioGroup,
+  Spinner,
+  Switch,
+  Textarea,
+} from "@fluentui/react-components";
+import { ArrowSync16Regular, Dismiss24Regular, Eye20Regular, EyeOff20Regular, Person16Regular } from "@fluentui/react-icons";
+import { DEFAULT_MODELS, DEFAULT_PROTECTED_TERMS, modelHint, modelLabel, type AuthMode, type DocContext, type ThemeMode, type ZeeSettings } from "../services/settingsService";
+import { getGoogleSession, signInWithGoogle, signOutGoogle, type GoogleSession } from "../services/authService";
+import { listModels, testConnection } from "../services/geminiService";
+import { LANGUAGES } from "../services/prompts";
+import type { UsageTotals } from "../App";
+import { openExternal } from "./insertActions";
+import { CustomActionsEditor } from "./CustomActionsEditor";
+import { supportsWordApi } from "../services/wordService";
+
+interface Props {
+  open: boolean;
+  settings: ZeeSettings;
+  usage: UsageTotals;
+  undoDepth: number;
+  onClearUndo: () => void;
+  /** Scroll to this section when the drawer opens. */
+  focus?: "actions" | null;
+  onChange: (patch: Partial<ZeeSettings>) => void;
+  onClose: () => void;
+}
+
+type Status = { intent: "success" | "error" | "info"; text: string } | null;
+
+const CONTEXTS: Array<{ value: DocContext; label: string }> = [
+  { value: "selection", label: "Selected text (recommended)" },
+  { value: "document", label: "Whole document" },
+  { value: "none", label: "Nothing – chat only" },
+];
+
+const TEMPS: Array<{ value: string; label: string }> = [
+  { value: "auto", label: "Auto (model default – recommended)" },
+  { value: "0", label: "0 – precise, repeatable" },
+  { value: "0.4", label: "0.4 – balanced" },
+  { value: "1", label: "1.0 – creative" },
+];
+
+function minutesLeft(s: GoogleSession | null): number {
+  return s ? Math.max(0, Math.round((s.expiresAt - Date.now()) / 60000)) : 0;
+}
+
+export function SettingsDrawer({ open, settings, usage, undoDepth, onClearUndo, focus, onChange, onClose }: Props) {
+  const actionsRef = useRef<HTMLElement>(null);
+  useEffect(() => {
+    if (open && focus === "actions") window.setTimeout(() => actionsRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 250);
+  }, [open, focus]);
+  const canTrack = supportsWordApi("1.4");
+  const [showKey, setShowKey] = useState(false);
+  const [status, setStatus] = useState<Status>(null);
+  const [testing, setTesting] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+  const [signingIn, setSigningIn] = useState(false);
+  const [session, setSession] = useState<GoogleSession | null>(() => getGoogleSession());
+  const [modelText, setModelText] = useState(settings.model);
+
+  useEffect(() => setModelText(settings.model), [settings.model]);
+  useEffect(() => {
+    if (open) {
+      setSession(getGoogleSession());
+      setStatus(null);
+    }
+  }, [open]);
+
+  const extraModels = useMemo(
+    () => settings.fetchedModels.filter((id) => !DEFAULT_MODELS.some((m) => m.id === id)),
+    [settings.fetchedModels]
+  );
+  const signedIn = !!session && minutesLeft(session) > 0;
+
+  const runTest = async () => {
+    setTesting(true);
+    setStatus(null);
+    try {
+      const r = await testConnection(settings);
+      if (r.models.length) onChange({ fetchedModels: r.models });
+      setStatus({ intent: "success", text: r.message });
+    } catch (e) {
+      setStatus({ intent: "error", text: (e as Error).message });
+    } finally {
+      setTesting(false);
+    }
+  };
+
+  const refreshModels = async () => {
+    setRefreshing(true);
+    try {
+      const ids = await listModels(settings);
+      onChange({ fetchedModels: ids });
+      setStatus({ intent: "info", text: `Loaded ${ids.length} models from your account.` });
+    } catch (e) {
+      setStatus({ intent: "error", text: (e as Error).message });
+    } finally {
+      setRefreshing(false);
+    }
+  };
+
+  const signIn = async () => {
+    setSigningIn(true);
+    setStatus(null);
+    try {
+      const s = await signInWithGoogle(settings.googleClientId);
+      setSession(s);
+      setStatus({ intent: "success", text: `Signed in${s.email ? ` as ${s.email}` : ""}.` });
+    } catch (e) {
+      setStatus({ intent: "error", text: (e as Error).message });
+    } finally {
+      setSigningIn(false);
+    }
+  };
+
+  const commitModel = (id: string) => {
+    const v = id.trim();
+    if (v && v !== settings.model) onChange({ model: v });
+  };
+
+  return (
+    <OverlayDrawer open={open} position="end" size="full" onOpenChange={(_, d) => !d.open && onClose()}>
+      <DrawerHeader>
+        <DrawerHeaderTitle action={<Button appearance="subtle" aria-label="Close" icon={<Dismiss24Regular />} onClick={onClose} />}>
+          Settings
+        </DrawerHeaderTitle>
+      </DrawerHeader>
+      <DrawerBody className="zee-settings">
+        <section>
+          <h3>Connection</h3>
+          <RadioGroup value={settings.authMode} onChange={(_, d) => onChange({ authMode: d.value as AuthMode })}>
+            <Radio value="apiKey" label="Gemini API key (bring your own key)" />
+            <Radio value="google" label="Google sign-in (Vertex AI, your Cloud project quota)" />
+            <Radio value="proxy" label="Team proxy (key kept on your server)" />
+          </RadioGroup>
+
+          {settings.authMode === "proxy" ? (
+            <div className="zee-form">
+              <Field label="Proxy URL" hint="Your deployed Zee AI proxy (see proxy/README.md – the Excel add-in's proxy works too), e.g. https://zee-proxy.yourteam.workers.dev">
+                <Input value={settings.proxyUrl} onChange={(_, d) => onChange({ proxyUrl: d.value })} placeholder="https://…" />
+              </Field>
+              <Field label="Team access token" hint="The shared secret your admin configured on the proxy.">
+                <Input type="password" value={settings.proxyToken} onChange={(_, d) => onChange({ proxyToken: d.value })} autoComplete="off" />
+              </Field>
+            </div>
+          ) : settings.authMode === "apiKey" ? (
+            <Field
+              label="Gemini API key"
+              hint={
+                <>
+                  Get a free key at{" "}
+                  <Link inline onClick={() => openExternal("https://aistudio.google.com/apikey")}>
+                    aistudio.google.com/apikey
+                  </Link>
+                  . Stored only on this computer (in this add-in's browser storage) – never in the document.
+                </>
+              }
+            >
+              <Input
+                type={showKey ? "text" : "password"}
+                value={settings.apiKey}
+                onChange={(_, d) => onChange({ apiKey: d.value })}
+                placeholder="AIza…"
+                autoComplete="off"
+                contentAfter={
+                  <Button
+                    size="small"
+                    appearance="transparent"
+                    aria-label={showKey ? "Hide key" : "Show key"}
+                    icon={showKey ? <EyeOff20Regular /> : <Eye20Regular />}
+                    onClick={() => setShowKey(!showKey)}
+                  />
+                }
+              />
+            </Field>
+          ) : (
+            <div className="zee-form">
+              <Field label="OAuth Client ID (Web application)" hint="Google Cloud console → APIs & Services → Credentials">
+                <Input value={settings.googleClientId} onChange={(_, d) => onChange({ googleClientId: d.value })} placeholder="1234-abc.apps.googleusercontent.com" />
+              </Field>
+              <Field label="Google Cloud project ID" hint="Vertex AI API must be enabled; usage is billed to this project.">
+                <Input value={settings.gcpProjectId} onChange={(_, d) => onChange({ gcpProjectId: d.value })} placeholder="my-project-123" />
+              </Field>
+              <Field label="Vertex AI location" hint='"global" works for most Gemini models; or e.g. us-central1, europe-west4.'>
+                <Input value={settings.gcpLocation} onChange={(_, d) => onChange({ gcpLocation: d.value })} placeholder="global" />
+              </Field>
+              <div className="zee-row">
+                {signedIn ? (
+                  <>
+                    <span className="zee-chip">
+                      <Person16Regular /> {session?.email ?? "Signed in"} · {minutesLeft(session)} min left
+                    </span>
+                    <Button
+                      size="small"
+                      onClick={() => {
+                        signOutGoogle();
+                        setSession(null);
+                      }}
+                    >
+                      Sign out
+                    </Button>
+                  </>
+                ) : (
+                  <Button appearance="primary" onClick={signIn} disabled={signingIn || !settings.googleClientId.trim()} icon={signingIn ? <Spinner size="tiny" /> : undefined}>
+                    Sign in with Google
+                  </Button>
+                )}
+              </div>
+            </div>
+          )}
+
+          <div className="zee-row">
+            <Button onClick={runTest} disabled={testing} icon={testing ? <Spinner size="tiny" /> : undefined}>
+              Test connection &amp; refresh models
+            </Button>
+          </div>
+          {status && (
+            <MessageBar intent={status.intent}>
+              <MessageBarBody>{status.text}</MessageBarBody>
+            </MessageBar>
+          )}
+        </section>
+
+        <Divider />
+
+        <section>
+          <h3>Model</h3>
+          <Field label="Gemini model" hint={modelHint(settings.model) ?? "Custom model ID"}>
+            <div className="zee-row">
+              <Combobox
+                className="zee-grow"
+                freeform
+                value={modelText}
+                selectedOptions={[settings.model]}
+                onChange={(e) => setModelText(e.target.value)}
+                onBlur={() => commitModel(modelText)}
+                onOptionSelect={(_, d) => {
+                  if (d.optionValue) {
+                    setModelText(d.optionValue);
+                    commitModel(d.optionValue);
+                  }
+                }}
+              >
+                <OptionGroup label="Recommended">
+                  {DEFAULT_MODELS.map((m) => (
+                    <Option key={m.id} value={m.id} text={m.id}>
+                      {m.label}
+                    </Option>
+                  ))}
+                </OptionGroup>
+                {extraModels.length > 0 && (
+                  <OptionGroup label="From your account">
+                    {extraModels.map((id) => (
+                      <Option key={id} value={id}>
+                        {id}
+                      </Option>
+                    ))}
+                  </OptionGroup>
+                )}
+              </Combobox>
+              {settings.authMode !== "google" && (
+                <Button
+                  aria-label="Refresh model list"
+                  title="Load the models available to your key or proxy"
+                  icon={refreshing ? <Spinner size="tiny" /> : <ArrowSync16Regular />}
+                  disabled={refreshing || (settings.authMode === "apiKey" ? !settings.apiKey.trim() : !settings.proxyUrl.trim())}
+                  onClick={refreshModels}
+                />
+              )}
+            </div>
+          </Field>
+          <Field label="Creativity (temperature)">
+            <Dropdown
+              value={TEMPS.find((t) => t.value === (settings.temperature === null ? "auto" : String(settings.temperature)))?.label ?? String(settings.temperature)}
+              selectedOptions={[settings.temperature === null ? "auto" : String(settings.temperature)]}
+              onOptionSelect={(_, d) => onChange({ temperature: d.optionValue === "auto" ? null : Number(d.optionValue) })}
+            >
+              {TEMPS.map((t) => (
+                <Option key={t.value} value={t.value}>
+                  {t.label}
+                </Option>
+              ))}
+            </Dropdown>
+          </Field>
+        </section>
+
+        <Divider />
+
+        <section>
+          <h3>Appearance</h3>
+          <RadioGroup layout="horizontal" value={settings.theme} onChange={(_, d) => onChange({ theme: d.value as ThemeMode })} aria-label="Theme">
+            <Radio value="auto" label="Match Office" />
+            <Radio value="light" label="Light" />
+            <Radio value="dark" label="Dark" />
+          </RadioGroup>
+          <p className="zee-muted">"Match Office" follows your Office theme (File → Account → Office Theme). Tip: the moon/sun button in the header switches quickly.</p>
+        </section>
+
+        <Divider />
+
+        <section>
+          <h3>Document context</h3>
+          <Field label="Chat reads by default" hint="You can also switch this above the chat box.">
+            <Dropdown
+              value={CONTEXTS.find((c) => c.value === settings.docContext)?.label}
+              selectedOptions={[settings.docContext]}
+              onOptionSelect={(_, d) => d.optionValue && onChange({ docContext: d.optionValue as DocContext })}
+            >
+              {CONTEXTS.map((c) => (
+                <Option key={c.value} value={c.value}>
+                  {c.label}
+                </Option>
+              ))}
+            </Dropdown>
+          </Field>
+          <Field label="Max document characters sent per prompt" hint="Longer documents are trimmed in the middle (start and end are kept). ~4 characters ≈ 1 token.">
+            <Input
+              type="number"
+              min={1000}
+              max={1000000}
+              step={5000}
+              value={String(settings.maxContextChars)}
+              onChange={(_, d) => {
+                const n = Number(d.value);
+                if (Number.isFinite(n)) onChange({ maxContextChars: Math.min(1000000, Math.max(1000, Math.round(n))) });
+              }}
+            />
+          </Field>
+        </section>
+
+        <Divider />
+
+        <section>
+          <h3>Editing</h3>
+          <Switch
+            checked={settings.trackChanges}
+            onChange={(_, d) => onChange({ trackChanges: d.checked })}
+            label="Apply edits as Track Changes (accept or reject them in Word's Review tab)"
+          />
+          {!canTrack && <p className="zee-muted">Track Changes needs Word for Microsoft 365 / Word 2021 or later (WordApi 1.4). On older Word, edits are applied directly.</p>}
+          <Switch
+            checked={settings.preserveFormatting}
+            onChange={(_, d) => onChange({ preserveFormatting: d.checked })}
+            label="Keep formatting: change only the words that differ (bold, links, styles stay)"
+          />
+        </section>
+
+        <Divider />
+
+        <section>
+          <h3>Protected terms</h3>
+          <Field
+            label="Never rewrite, translate or “correct” these terms"
+            hint="Comma or line separated. Used by every action, the chat, drafting and translation."
+          >
+            <Textarea rows={4} resize="vertical" value={settings.protectedTerms} onChange={(_, d) => onChange({ protectedTerms: d.value })} />
+          </Field>
+          <div className="zee-row">
+            <Button size="small" disabled={settings.protectedTerms === DEFAULT_PROTECTED_TERMS} onClick={() => onChange({ protectedTerms: DEFAULT_PROTECTED_TERMS })}>
+              Reset to petroleum defaults
+            </Button>
+          </div>
+        </section>
+
+        <Divider />
+
+        <section ref={actionsRef}>
+          <h3>My quick actions</h3>
+          <p className="zee-muted">Your own one-click actions, listed under “Mine” in the toolbar.</p>
+          <CustomActionsEditor actions={settings.customActions} onChange={(customActions) => onChange({ customActions })} />
+        </section>
+
+        <Divider />
+
+        <section>
+          <h3>Inserting text</h3>
+          <Switch
+            checked={settings.richInsert}
+            onChange={(_, d) => onChange({ richInsert: d.checked })}
+            label="Keep formatting from AI answers (headings, bold, lists, tables)"
+          />
+          <Field label="Default translation language">
+            <Dropdown value={settings.translateTo} selectedOptions={[settings.translateTo]} onOptionSelect={(_, d) => d.optionValue && onChange({ translateTo: d.optionValue })}>
+              {LANGUAGES.map((l) => (
+                <Option key={l} value={l}>
+                  {l}
+                </Option>
+              ))}
+            </Dropdown>
+          </Field>
+          <p className="zee-muted">
+            Nothing is changed without your click: edits show a diff first, and every insert can be undone step by step with ↶ ({undoDepth} step{undoDepth === 1 ? "" : "s"} available).
+          </p>
+          <div className="zee-row">
+            <Button size="small" disabled={!undoDepth} onClick={onClearUndo}>
+              Clear undo history (keep the text)
+            </Button>
+          </div>
+        </section>
+
+        <Divider />
+
+        <section>
+          <h3>Cost guard</h3>
+          <Field label="Ask before sending prompts larger than (tokens)" hint="Default 20,000. 0 = never ask. ~4 characters ≈ 1 token.">
+            <Input
+              type="number"
+              min={0}
+              step={1000}
+              value={String(settings.costGuardTokens)}
+              onChange={(_, d) => {
+                const n = Number(d.value);
+                if (Number.isFinite(n) && n >= 0) onChange({ costGuardTokens: Math.round(n) });
+              }}
+            />
+          </Field>
+        </section>
+
+        <Divider />
+
+        <section>
+          <h3>Usage this session</h3>
+          <div className="zee-usage">
+            <div>
+              <strong>{usage.requests}</strong>
+              <span>requests</span>
+            </div>
+            <div>
+              <strong>{usage.promptTokens.toLocaleString()}</strong>
+              <span>prompt tokens</span>
+            </div>
+            <div>
+              <strong>{usage.outputTokens.toLocaleString()}</strong>
+              <span>completion tokens</span>
+            </div>
+          </div>
+          <p className="zee-muted">
+            Current model: {modelLabel(settings.model)}. Quotas and billing are managed in Google AI Studio (API key) or the Google Cloud console (Vertex AI).
+          </p>
+        </section>
+
+        <Divider />
+
+        <section>
+          <h3>About</h3>
+          <p className="zee-muted">
+            Zee AI for Word {__ZEE_VERSION__} · built {new Date(__ZEE_BUILD__).toLocaleString()}
+          </p>
+          <p className="zee-muted">If this date is older than your last update, Word is still showing a cached copy – close the pane and open it again.</p>
+        </section>
+      </DrawerBody>
+    </OverlayDrawer>
+  );
+}

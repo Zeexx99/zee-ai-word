@@ -1,0 +1,44 @@
+{
+  "name": "zee-ai-word",
+  "version": "1.1.0",
+  "private": true,
+  "description": "Zee AI for Word - Gemini-powered writing copilot task pane for Microsoft Word",
+  "type": "module",
+  "scripts": {
+    "certs": "office-addin-dev-certs install",
+    "dev": "vite",
+    "build": "tsc --noEmit && vitest run && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "validate": "office-addin-manifest validate manifest.xml",
+    "start:desktop": "npm run build && office-addin-dev-settings register manifest.xml && office-addin-dev-settings sideload manifest.xml desktop",
+    "start:web": "vite",
+    "stop": "office-addin-dev-settings unregister manifest.xml",
+    "manifest:prod": "node scripts/make-manifest.mjs",
+    "validate:prod": "office-addin-manifest validate manifest.prod.xml"
+  },
+  "dependencies": {
+    "@fluentui/react-components": "^9.56.0",
+    "@fluentui/react-icons": "^2.0.270",
+    "highlight.js": "^11.10.0",
+    "lowlight": "^3.1.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-markdown": "^9.0.1",
+    "rehype-highlight": "^7.0.1",
+    "remark-gfm": "^4.0.0"
+  },
+  "devDependencies": {
+    "@types/office-js": "^1.0.440",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "office-addin-dev-certs": "^1.13.5",
+    "office-addin-dev-settings": "^2.3.6",
+    "office-addin-manifest": "^1.13.6",
+    "typescript": "^5.6.3",
+    "vite": "^5.4.11",
+    "vitest": "^2.1.9"
+  }
+}

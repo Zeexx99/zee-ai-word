@@ -1,0 +1,143 @@
+import { Menu, MenuButton, MenuDivider, MenuGroupHeader, MenuItem, MenuList, MenuPopover, MenuTrigger, Toolbar, ToolbarButton, Tooltip } from "@fluentui/react-components";
+import {
+  Compose20Regular,
+  Flash20Regular,
+  Emoji20Regular,
+  Sparkle20Regular,
+  TextBulletListSquare20Regular,
+  TextExpand20Regular,
+  TextGrammarCheckmark20Regular,
+  Translate20Regular,
+} from "@fluentui/react-icons";
+import { LANGUAGES, TONES, type SummaryStyle, type ToneId } from "../services/prompts";
+import type { CustomAction } from "../services/settingsService";
+
+export interface QuickActionHandlers {
+  onRewrite: () => void;
+  onGrammar: () => void;
+  onTone: (tone: ToneId) => void;
+  onSummarize: (style: SummaryStyle) => void;
+  onLength: (dir: "expand" | "shorten") => void;
+  onTranslate: (language: string) => void;
+  onDraft: () => void;
+  onCustom: (action: CustomAction) => void;
+  onManageActions: () => void;
+}
+
+export function QuickActions(p: QuickActionHandlers & { disabled?: boolean; preferredLanguage: string; customActions: CustomAction[] }) {
+  const languages = [p.preferredLanguage, ...LANGUAGES.filter((l) => l !== p.preferredLanguage)];
+  return (
+    <Toolbar className="zee-quick" size="small" aria-label="Quick actions">
+      <Tooltip content="Rewrite & polish the selection" relationship="label">
+        <ToolbarButton appearance="subtle" icon={<Sparkle20Regular />} disabled={p.disabled} onClick={p.onRewrite}>
+          <span className="zee-quick-label">Rewrite</span>
+        </ToolbarButton>
+      </Tooltip>
+
+      <Tooltip content="Grammar & spelling – the selection, or the whole document (as comments) if nothing is selected" relationship="label">
+        <ToolbarButton appearance="subtle" icon={<TextGrammarCheckmark20Regular />} disabled={p.disabled} onClick={p.onGrammar}>
+          <span className="zee-quick-label">Grammar</span>
+        </ToolbarButton>
+      </Tooltip>
+
+      <Menu>
+        <MenuTrigger disableButtonEnhancement>
+          <MenuButton size="small" appearance="subtle" icon={<Emoji20Regular />} disabled={p.disabled} title="Tone" aria-label="Tone">
+            <span className="zee-quick-label">Tone</span>
+          </MenuButton>
+        </MenuTrigger>
+        <MenuPopover>
+          <MenuList>
+            <MenuGroupHeader>Rewrite the selection as…</MenuGroupHeader>
+            {TONES.map((t) => (
+              <MenuItem key={t.id} onClick={() => p.onTone(t.id)}>
+                {t.label}
+              </MenuItem>
+            ))}
+          </MenuList>
+        </MenuPopover>
+      </Menu>
+
+      <Menu>
+        <MenuTrigger disableButtonEnhancement>
+          <MenuButton size="small" appearance="subtle" icon={<TextBulletListSquare20Regular />} disabled={p.disabled} title="Summarize" aria-label="Summarize">
+            <span className="zee-quick-label">Summarize</span>
+          </MenuButton>
+        </MenuTrigger>
+        <MenuPopover>
+          <MenuList>
+            <MenuGroupHeader>Selection – or the whole document if nothing is selected</MenuGroupHeader>
+            <MenuItem onClick={() => p.onSummarize("bullets")}>Bullet points</MenuItem>
+            <MenuItem onClick={() => p.onSummarize("executive")}>Executive summary</MenuItem>
+            <MenuItem onClick={() => p.onSummarize("tldr")}>TL;DR (one or two sentences)</MenuItem>
+          </MenuList>
+        </MenuPopover>
+      </Menu>
+
+      <Menu>
+        <MenuTrigger disableButtonEnhancement>
+          <MenuButton size="small" appearance="subtle" icon={<TextExpand20Regular />} disabled={p.disabled} title="Expand or shorten" aria-label="Expand or shorten">
+            <span className="zee-quick-label">Length</span>
+          </MenuButton>
+        </MenuTrigger>
+        <MenuPopover>
+          <MenuList>
+            <MenuItem onClick={() => p.onLength("expand")} secondaryContent="≈2×">
+              Expand
+            </MenuItem>
+            <MenuItem onClick={() => p.onLength("shorten")} secondaryContent="≈½">
+              Shorten
+            </MenuItem>
+          </MenuList>
+        </MenuPopover>
+      </Menu>
+
+      <Menu>
+        <MenuTrigger disableButtonEnhancement>
+          <MenuButton size="small" appearance="subtle" icon={<Translate20Regular />} disabled={p.disabled} title="Translate" aria-label="Translate">
+            <span className="zee-quick-label">Translate</span>
+          </MenuButton>
+        </MenuTrigger>
+        <MenuPopover className="zee-lang-popover">
+          <MenuList>
+            <MenuGroupHeader>Translate the selection into…</MenuGroupHeader>
+            <MenuItem onClick={() => p.onTranslate(languages[0])}>{languages[0]}</MenuItem>
+            <MenuDivider />
+            {languages.slice(1).map((l) => (
+              <MenuItem key={l} onClick={() => p.onTranslate(l)}>
+                {l}
+              </MenuItem>
+            ))}
+          </MenuList>
+        </MenuPopover>
+      </Menu>
+
+      <Menu>
+        <MenuTrigger disableButtonEnhancement>
+          <MenuButton size="small" appearance="subtle" icon={<Flash20Regular />} disabled={p.disabled} title="My actions" aria-label="My actions">
+            <span className="zee-quick-label">Mine</span>
+          </MenuButton>
+        </MenuTrigger>
+        <MenuPopover className="zee-lang-popover">
+          <MenuList>
+            <MenuGroupHeader>My quick actions</MenuGroupHeader>
+            {p.customActions.length === 0 && <MenuItem disabled>No custom actions yet</MenuItem>}
+            {p.customActions.map((a) => (
+              <MenuItem key={a.id} title={a.instruction} onClick={() => p.onCustom(a)} secondaryContent={a.mode === "replace" ? "edit" : "insert"}>
+                {a.name}
+              </MenuItem>
+            ))}
+            <MenuDivider />
+            <MenuItem onClick={p.onManageActions}>Add or edit actions…</MenuItem>
+          </MenuList>
+        </MenuPopover>
+      </Menu>
+
+      <Tooltip content="Draft new content (clause, section, email…)" relationship="label">
+        <ToolbarButton appearance="subtle" icon={<Compose20Regular />} disabled={p.disabled} onClick={p.onDraft}>
+          <span className="zee-quick-label">Draft</span>
+        </ToolbarButton>
+      </Tooltip>
+    </Toolbar>
+  );
+}

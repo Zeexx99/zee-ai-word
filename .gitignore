@@ -1,0 +1,14 @@
+node_modules/
+dist/
+*.log
+client-log.txt
+setup-log.txt
+start-log.txt
+update-log.txt
+diag-log.txt
+setup-status.txt
+.env
+.env.*
+*.local
+publish-log.txt
+_publish-now.bat
