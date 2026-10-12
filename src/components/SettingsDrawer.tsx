@@ -377,6 +377,9 @@ export function SettingsDrawer({ open, settings, usage, undoDepth, onClearUndo, 
             onChange={(_, d) => onChange({ autoDirection: d.checked })}
             label="Auto direction: Arabic right-to-left and right-aligned, English left-aligned, headings centred"
           />
+          <Field label="Arabic font" hint="Used for Arabic text Zee AI writes. Pick from the list or type any installed font.">
+            <ArabicFontPicker value={settings.arabicFont} onChange={(arabicFont) => onChange({ arabicFont })} />
+          </Field>
         </section>
 
         <Divider />
@@ -593,5 +596,37 @@ export function SettingsDrawer({ open, settings, usage, undoDepth, onClearUndo, 
         </section>
       </DrawerBody>
     </OverlayDrawer>
+  );
+}
+
+const ARABIC_FONTS = ["Simplified Arabic", "Arial", "Traditional Arabic", "Sakkal Majalla", "Tahoma", "Times New Roman", "Segoe UI", "Calibri", "Arabic Typesetting", "Dubai"];
+const SAME_AS_DOC = "Same as document";
+
+/** Free-text font combobox: "" = keep the document's font. */
+function ArabicFontPicker({ value, onChange }: { value: string; onChange: (font: string) => void }) {
+  const [text, setText] = useState(value || SAME_AS_DOC);
+  useEffect(() => setText(value || SAME_AS_DOC), [value]);
+  const commit = (v: string) => onChange(v.trim() === SAME_AS_DOC ? "" : v.trim());
+  return (
+    <Combobox
+      freeform
+      value={text}
+      selectedOptions={[value || SAME_AS_DOC]}
+      onChange={(e) => setText(e.target.value)}
+      onBlur={() => commit(text)}
+      onOptionSelect={(_, d) => {
+        if (d.optionValue) {
+          setText(d.optionValue);
+          commit(d.optionValue);
+        }
+      }}
+    >
+      <Option value={SAME_AS_DOC}>{SAME_AS_DOC}</Option>
+      {ARABIC_FONTS.map((f) => (
+        <Option key={f} value={f} text={f}>
+          <span style={{ fontFamily: `'${f}'` }}>{f} – نص عربي</span>
+        </Option>
+      ))}
+    </Combobox>
   );
 }

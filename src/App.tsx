@@ -124,6 +124,8 @@ import {
   summarizePrompt,
   tonePrompt,
   translatePrompt,
+  bilingualPrompt,
+  BILINGUAL_SYSTEM_PROMPT,
   type SummaryStyle,
   type ToneId,
 } from "./services/prompts";
@@ -397,6 +399,24 @@ export default function App() {
   const onTranslate = (language: string) => {
     if (language !== settingsRef.current.translateTo) updateSettings({ translateTo: language });
     return editAction(`Translate to ${language}`, (t) => translatePrompt(t, language));
+  };
+
+  /** English + Arabic version of the selection, inserted as Markdown (each paragraph gets its own direction). */
+  const onBilingual = async (layout: "stacked" | "table") => {
+    if (!ensureConfigured()) return;
+    const text = await requireSelection();
+    if (!text) return;
+    const title = layout === "table" ? "Bilingual – side by side" : "Bilingual – English + Arabic";
+    await runAction({
+      kind: "action",
+      title,
+      display: `${title}: “${shorten(text, 80)}”`,
+      prompt: bilingualPrompt(text, layout),
+      system: BILINGUAL_SYSTEM_PROMPT,
+      contextLabel: selLabel(text),
+      format: "markdown",
+      defaultLocation: "replace",
+    });
   };
 
   const onGrammar = async () => {
@@ -1127,6 +1147,7 @@ export default function App() {
             onSummarize={onSummarize}
             onLength={onLength}
             onTranslate={onTranslate}
+            onBilingual={onBilingual}
             onDraft={() => setDraftOpen(true)}
             customActions={allCustomActions(settings)}
             onTable={onTable}

@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { alignmentFor, detectDirection, hasRtl } from "../utils/direction";
+import { alignmentFor, detectDirection, hasRtl, inspectParagraphXml, setParagraphDirectionXml } from "../utils/direction";
 import { markdownToHtml, plainToHtml } from "../utils/mdToHtml";
 import { sanitizeSettings } from "../services/settingsService";
+import { bilingualPrompt } from "../services/prompts";
 
 describe("detectDirection", () => {
   it("detects Arabic and English paragraphs", () => {
@@ -71,5 +72,56 @@ describe("autoDirection setting", () => {
   it("defaults to on and respects off", () => {
     expect(sanitizeSettings(null).autoDirection).toBe(true);
     expect(sanitizeSettings({ autoDirection: false }).autoDirection).toBe(false);
+  });
+});
+
+const pkg = (p: string) =>
+  `<pkg:package><pkg:part><pkg:xmlData><w:document><w:body>${p}<w:sectPr/></w:body></w:document></pkg:xmlData></pkg:part></pkg:package>`;
+const para = (x: string | null) => (x === null ? null : x.replace(/.*<w:body>|<w:sectPr\/>.*/g, ""));
+
+describe("paragraph OOXML direction", () => {
+  it("adds bidi to an Arabic paragraph without pPr", () => {
+    expect(para(setParagraphDirectionXml(pkg("<w:p><w:r><w:t>نص</w:t></w:r></w:p>"), "rtl"))).toBe("<w:p><w:pPr><w:bidi/></w:pPr><w:r><w:t>نص</w:t></w:r></w:p>");
+  });
+  it("puts bidi in schema order and drops the old left alignment", () => {
+    const x = pkg('<w:p><w:pPr><w:pStyle w:val="Normal"/><w:spacing w:after="0"/><w:jc w:val="left"/><w:rPr><w:b/></w:rPr></w:pPr><w:r><w:t>نص</w:t></w:r></w:p>');
+    expect(para(setParagraphDirectionXml(x, "rtl"))).toBe('<w:p><w:pPr><w:pStyle w:val="Normal"/><w:bidi/><w:spacing w:after="0"/><w:rPr><w:b/></w:rPr></w:pPr><w:r><w:t>نص</w:t></w:r></w:p>');
+  });
+  it("keeps justified and centres headings", () => {
+    const j = pkg('<w:p><w:pPr><w:jc w:val="both"/></w:pPr><w:r><w:t>نص</w:t></w:r></w:p>');
+    expect(para(setParagraphDirectionXml(j, "rtl"))).toBe('<w:p><w:pPr><w:bidi/><w:jc w:val="both"/></w:pPr><w:r><w:t>نص</w:t></w:r></w:p>');
+    const h = pkg('<w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t>عنوان</w:t></w:r></w:p>');
+    expect(para(setParagraphDirectionXml(h, "rtl", true))).toBe('<w:p><w:pPr><w:pStyle w:val="Heading1"/><w:bidi/><w:jc w:val="center"/></w:pPr><w:r><w:t>عنوان</w:t></w:r></w:p>');
+  });
+  it("turns an English paragraph back to left-to-right", () => {
+    const x = pkg('<w:p><w:pPr><w:bidi/><w:jc w:val="right"/></w:pPr><w:r><w:t>Text</w:t></w:r></w:p>');
+    expect(para(setParagraphDirectionXml(x, "ltr"))).toBe("<w:p><w:r><w:t>Text</w:t></w:r></w:p>");
+  });
+  it("returns null when nothing changes", () => {
+    expect(setParagraphDirectionXml(pkg("<w:p><w:pPr><w:bidi/></w:pPr><w:r><w:t>نص</w:t></w:r></w:p>"), "rtl")).toBeNull();
+    expect(setParagraphDirectionXml(pkg("<w:p><w:r><w:t>Text</w:t></w:r></w:p>"), "ltr")).toBeNull();
+  });
+  it("flags paragraphs that are unsafe to rewrite", () => {
+    expect(inspectParagraphXml(pkg("<w:p><w:pPr><w:bidi/></w:pPr></w:p>"))).toEqual({ bidi: true, risky: false });
+    expect(inspectParagraphXml(pkg('<w:p><w:pPr><w:numPr><w:ilvl w:val="0"/></w:numPr></w:pPr><w:r><w:t>x</w:t></w:r></w:p>'))?.risky).toBe(true);
+    expect(inspectParagraphXml(pkg('<w:p><w:commentRangeStart w:id="1"/><w:r><w:t>x</w:t></w:r></w:p>'))?.risky).toBe(true);
+    expect(inspectParagraphXml(pkg("<w:sdt><w:sdtContent><w:p><w:r><w:t>x</w:t></w:r></w:p></w:sdtContent></w:sdt>"))?.risky).toBe(true);
+  });
+});
+
+describe("Arabic font and bilingual tables", () => {
+  it("uses the Arabic font for RTL blocks only", () => {
+    const html = markdownToHtml("نص عربي\n\nEnglish", { autoDirection: true, fontFamily: "Aptos", arabicFont: "Simplified Arabic" });
+    expect(html).toContain(`<p dir="rtl" style="font-family:'Simplified Arabic';direction:rtl;text-align:right">`);
+    expect(html).toContain(`<p dir="ltr" style="font-family:'Aptos';text-align:left">English</p>`);
+  });
+  it("keeps an English | Arabic table left-to-right with per-cell direction", () => {
+    const html = markdownToHtml("| English | العربية |\n|---|---|\n| Pump installed | تم تركيب المضخة |", { autoDirection: true });
+    expect(html).toContain('<table style="border-collapse:collapse">');
+    expect(html).toContain('dir="rtl" style="border:1px solid #999;padding:3pt 6pt;direction:rtl;text-align:right"');
+  });
+  it("builds both bilingual layouts", () => {
+    expect(bilingualPrompt("Hello", "table")).toContain("| English | العربية |");
+    expect(bilingualPrompt("Hello", "stacked")).toContain('"---"');
   });
 });

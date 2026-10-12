@@ -16,14 +16,19 @@ export interface HtmlOptions {
   fontSizePt?: number;
   /** Arabic paragraphs right-to-left + right-aligned, English left-aligned, headings centred. */
   autoDirection?: boolean;
+  /** Font for right-to-left blocks (replaces the body font there). */
+  arabicFont?: string;
 }
 
+const fontCss = (name: string) => `font-family:'${name.replace(/'/g, "")}'`;
+
 /** Builds ` dir="…" style="…"` for one block. `align` "auto" = right for RTL text, left for LTR. */
-function blockAttrs(styles: string[], text: string, auto: boolean, align: "auto" | "center" | "none" = "auto"): string {
-  const css = [...styles];
+function blockAttrs(styles: string[], text: string, auto: boolean, align: "auto" | "center" | "none" = "auto", arabicFont?: string): string {
+  let css = [...styles];
   let dir: TextDirection | null = null;
   if (auto) {
     dir = detectDirection(text);
+    if (dir === "rtl" && arabicFont) css = [fontCss(arabicFont), ...css.filter((c) => !c.startsWith("font-family:"))];
     if (dir === "rtl") css.push("direction:rtl");
     if (align === "center") css.push("text-align:center");
     else if (align === "auto" && dir) css.push(`text-align:${dir === "rtl" ? "right" : "left"}`);
@@ -99,7 +104,12 @@ export function markdownToHtml(md: string, opts: HtmlOptions = {}): string {
   const pStyle = styleParts.length ? ` style="${styleParts.join(";")}"` : "";
   const auto = !!opts.autoDirection;
   /** Attributes of a body paragraph (font + direction when autoDirection is on). */
-  const pAttrs = (text: string) => (auto ? blockAttrs(styleParts, text, true) : pStyle);
+  const pAttrs = (text: string) => (auto ? blockAttrs(styleParts, text, true, "auto", opts.arabicFont) : pStyle);
+  /** Font-only style for inline wrappers (table cells): the Arabic font for RTL text. */
+  const fontAttrs = (text: string) => {
+    if (!(auto && opts.arabicFont && detectDirection(text) === "rtl")) return pStyle;
+    return ` style="${[fontCss(opts.arabicFont), ...styleParts.filter((c) => !c.startsWith("font-family:"))].join(";")}"`;
+  };
 
   const lines = md.replace(/\r\n?/g, "\n").split("\n");
   const out: string[] = [];
@@ -133,7 +143,7 @@ export function markdownToHtml(md: string, opts: HtmlOptions = {}): string {
     if (h) {
       flushPara();
       const level = h[1].length;
-      out.push(`<h${level}${auto ? blockAttrs([], h[2], true, "center") : ""}>${inline(h[2])}</h${level}>`);
+      out.push(`<h${level}${auto ? blockAttrs([], h[2], true, "center", opts.arabicFont) : ""}>${inline(h[2])}</h${level}>`);
       continue;
     }
 
@@ -155,9 +165,11 @@ export function markdownToHtml(md: string, opts: HtmlOptions = {}): string {
       const cellCss = ["border:1px solid #999", "padding:3pt 6pt"];
       const cell = (tag: string, c: string) =>
         auto
-          ? `<${tag}${blockAttrs(cellCss, c, true)}><span${pStyle}>${inline(c)}</span></${tag}>`
+          ? `<${tag}${blockAttrs(cellCss, c, true)}><span${fontAttrs(c)}>${inline(c)}</span></${tag}>`
           : `<${tag} style="${cellCss.join(";")}"><span${pStyle}>${inline(c)}</span></${tag}>`;
-      const tableRtl = auto && detectDirection([header, ...rows].flat().join(" ")) === "rtl";
+      // Table direction by cell vote; a tie (e.g. an English | Arabic bilingual table) stays left-to-right.
+      const votes = [header, ...rows].flat().map((c) => detectDirection(c));
+      const tableRtl = auto && votes.filter((v) => v === "rtl").length > votes.filter((v) => v === "ltr").length;
       out.push(
         `<table${tableRtl ? ' dir="rtl"' : ""} style="border-collapse:collapse${tableRtl ? ";direction:rtl" : ""}"><thead><tr>${header.map((c) => cell("th", c)).join("")}</tr></thead><tbody>` +
           rows.map((r) => `<tr>${header.map((_, ci) => cell("td", r[ci] ?? "")).join("")}</tr>`).join("") +
@@ -217,7 +229,7 @@ export function plainToHtml(text: string, opts: HtmlOptions = {}): string {
     .replace(/\r\n?/g, "\n")
     .split("\n")
     .filter((l) => l.trim())
-    .map((l) => `<p${blockAttrs(styleParts, l, opts.autoDirection !== false)}>${escapeHtml(l)}</p>`)
+    .map((l) => `<p${blockAttrs(styleParts, l, opts.autoDirection !== false, "auto", opts.arabicFont)}>${escapeHtml(l)}</p>`)
     .join("");
 }
 

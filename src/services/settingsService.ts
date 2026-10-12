@@ -94,6 +94,8 @@ export interface ZeeSettings {
   preserveFormatting: boolean;
   /** Inserted text: Arabic right-to-left + right-aligned, English left-aligned, headings centred. */
   autoDirection: boolean;
+  /** Font for Arabic text Zee AI writes ("" = same as the document). */
+  arabicFont: string;
   /** Terms Zee AI must never rewrite, translate or "correct" (comma or newline separated). */
   protectedTerms: string;
   /** User-defined quick actions. */
@@ -128,6 +130,7 @@ export const DEFAULT_SETTINGS: ZeeSettings = {
   trackChanges: false,
   preserveFormatting: true,
   autoDirection: true,
+  arabicFont: "",
   protectedTerms: DEFAULT_PROTECTED_TERMS,
   customActions: DEFAULT_CUSTOM_ACTIONS,
   useBulkModel: true,
@@ -153,6 +156,7 @@ export function sanitizeSettings(parsed: Partial<ZeeSettings> | null | undefined
   merged.trackChanges = merged.trackChanges === true;
   merged.preserveFormatting = merged.preserveFormatting !== false;
   merged.autoDirection = merged.autoDirection !== false;
+  merged.arabicFont = typeof merged.arabicFont === "string" ? merged.arabicFont.trim().slice(0, 64) : "";
   merged.customActions = Array.isArray(merged.customActions)
     ? merged.customActions
         .filter((a) => a && typeof a.name === "string" && typeof a.instruction === "string" && a.name.trim() && a.instruction.trim())

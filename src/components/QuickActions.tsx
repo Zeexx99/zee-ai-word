@@ -24,6 +24,7 @@ export interface QuickActionHandlers {
   onSummarize: (style: SummaryStyle) => void;
   onLength: (dir: "expand" | "shorten") => void;
   onTranslate: (language: string) => void;
+  onBilingual: (layout: "stacked" | "table") => void;
   onDraft: () => void;
   onCustom: (action: CustomAction) => void;
   onManageActions: () => void;
@@ -118,6 +119,10 @@ export function QuickActions(p: QuickActionHandlers & { disabled?: boolean; pref
                 {l}
               </MenuItem>
             ))}
+            <MenuDivider />
+            <MenuGroupHeader>Bilingual – English + Arabic</MenuGroupHeader>
+            <MenuItem onClick={() => p.onBilingual("stacked")}>English, then Arabic</MenuItem>
+            <MenuItem onClick={() => p.onBilingual("table")}>Side by side (table)</MenuItem>
           </MenuList>
         </MenuPopover>
       </Menu>

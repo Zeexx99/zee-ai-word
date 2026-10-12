@@ -98,6 +98,24 @@ export function translatePrompt(text: string, language: string): string {
   return `Translate the selected text into ${language}. Translate faithfully and naturally for a native reader of ${language}; keep names, numbers, product names and formatting (paragraphs, bullets). Do not add notes.\n\n${wrap(text)}`;
 }
 
+/* ---------------------------------------------------------------- bilingual (English + Arabic) */
+
+export type BilingualLayout = "stacked" | "table";
+
+export const BILINGUAL_SYSTEM_PROMPT = `You are Zee AI, producing a bilingual English + Arabic version of text from a Microsoft Word document (engineering / oil & gas reports).
+Output ONLY Markdown – no preamble, notes or code fences.
+- Translate faithfully in both directions; the source may be English, Arabic or mixed. Use formal Modern Standard Arabic suitable for reports.
+- Keep numbers, units, dates, well names, equipment tags and abbreviations (e.g. ESP, BHP, W-486, bbl/d) exactly as written in BOTH versions.
+- Never add or drop information; both versions must say the same thing.`;
+
+export function bilingualPrompt(text: string, layout: BilingualLayout): string {
+  const how =
+    layout === "table"
+      ? 'Output only a Markdown table with exactly two columns and the header "| English | العربية |". Add one row per heading, paragraph or bullet of the source, in order: English in the left cell, Arabic in the right. Make heading rows bold (**…**) in both cells and start bullet rows with "• ". No line breaks and no "|" inside cells.'
+      : 'Write the complete English version first, then a line containing only "---", then the complete Arabic version. Keep the same structure in both (headings as "#"/"##", bullets as "- ", numbered lists, tables).';
+  return `Create a bilingual English + Arabic version of the selected text. ${how}\n\n${wrap(text)}`;
+}
+
 export function summarizePrompt(text: string, style: SummaryStyle): string {
   const how =
     style === "bullets"
