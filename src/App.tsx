@@ -162,8 +162,25 @@ export default function App() {
   const autoDark = useAutoDark();
   const dark = settings.theme === "auto" ? autoDark : settings.theme === "dark";
   useBodyThemeClass(dark);
-  const inWord = useMemo(() => isWordAvailable(), []);
-  const docTitle = useMemo(() => getDocTitle(), []);
+  // Word may finish initialising Office.js after the pane has rendered (main.tsx renders anyway after 8 s,
+  // and a cleared add-in cache makes the first start slow). Re-check instead of freezing in preview mode.
+  const [inWord, setInWord] = useState(() => isWordAvailable());
+  useEffect(() => {
+    if (inWord || typeof Office === "undefined") return;
+    let alive = true;
+    const check = () => {
+      if (alive && isWordAvailable()) setInWord(true);
+    };
+    Office.onReady().then(check, () => undefined);
+    const timer = window.setInterval(check, 1000);
+    const stop = window.setTimeout(() => window.clearInterval(timer), 60_000);
+    return () => {
+      alive = false;
+      window.clearInterval(timer);
+      window.clearTimeout(stop);
+    };
+  }, [inWord]);
+  const docTitle = useMemo(() => getDocTitle(), [inWord]);
 
   // Refresh the shared team config (glossary + actions) from its URL / the team proxy once per pane load.
   useEffect(() => {
