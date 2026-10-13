@@ -16,6 +16,8 @@ export interface InsertActions {
   goToParagraph: (n: number) => void;
   /** True inside Word (insert buttons are disabled in the browser preview). */
   canInsert: boolean;
+  /** Insert the Excel chart that belongs to a daily report answer. */
+  insertChart: (message: ChatMessage) => Promise<void>;
   /** Run an answer again (Regenerate / Retry). */
   retry: (assistantId: string) => void;
   /** Put a prompt back into the chat box to edit and resend it. */

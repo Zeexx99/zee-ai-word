@@ -49,6 +49,8 @@ export interface ChatMessage {
   errorKind?: string;
   /** "General" scope: the paragraphs Zee AI located for an edit (re-selected before Replace). */
   paraRange?: [number, number];
+  /** Daily report from Excel: a chart for this report date can be inserted (kept outside the saved history). */
+  chartFor?: string;
   /** "General" scope: new text goes after this paragraph (number + its text, to find it if it moved). */
   anchorParagraph?: number;
   anchorText?: string;

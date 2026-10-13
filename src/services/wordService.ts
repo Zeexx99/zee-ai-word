@@ -14,6 +14,7 @@ import { alignmentFor, detectDirection, hasRtl, inspectParagraphXml, setParagrap
 import { loadSettings } from "./settingsService";
 import { normalizeWordText } from "../utils/text";
 import { countOccurrences, escapeWordSearch, planEdits, MAX_SEARCH } from "../utils/edits";
+import { headingLevel } from "../utils/sections";
 
 export type InsertLocation = "replace" | "after" | "end";
 export type InsertFormat = "markdown" | "plain";
@@ -103,6 +104,60 @@ export async function getDocumentParagraphs(): Promise<string[]> {
     await ctx.sync();
     return paras.items.map((p) => normalizeWordText(p.text ?? "").replace(/\n+/g, " ").trim());
   });
+}
+
+/**
+ * Text + heading level of every paragraph, numbered exactly like getDocumentParagraphs (for the
+ * section navigator).
+ */
+export async function getOutline(): Promise<Array<{ text: string; level: number | null }>> {
+  requireWord();
+  const rich = supportsWordApi("1.3");
+  return Word.run(async (ctx) => {
+    const paras = ctx.document.body.paragraphs;
+    paras.load(rich ? "items/text,items/style,items/styleBuiltIn,items/outlineLevel" : "items/text,items/style,items/outlineLevel");
+    await ctx.sync();
+    return paras.items.map((p) => {
+      const text = normalizeWordText(p.text ?? "").replace(/\n+/g, " ").trim();
+      let outline: number | null = null;
+      try {
+        outline = typeof p.outlineLevel === "number" ? p.outlineLevel : null;
+      } catch {
+        outline = null;
+      }
+      return { text, level: headingLevel(rich ? String(p.styleBuiltIn ?? "") : "", p.style ?? "", outline) };
+    });
+  });
+}
+
+/** Inserts a picture (PNG/JPEG base64) as its own paragraph after the cursor's paragraph. Undoable. */
+export async function insertPictureAfterCursor(base64: string, label: string, altText = ""): Promise<void> {
+  requireWord();
+  const id = uid();
+  let undoable = false;
+  await Word.run(async (ctx) => {
+    const sel = ctx.document.getSelection();
+    const p = sel.paragraphs.getLast().insertParagraph("", Word.InsertLocation.after);
+    if (supportsWordApi("1.3")) p.styleBuiltIn = Word.BuiltInStyleName.normal;
+    const pic = p.insertInlinePictureFromBase64(base64, Word.InsertLocation.start);
+    pic.load("width,height");
+    await ctx.sync();
+    if (pic.width > 460) {
+      const k = 460 / pic.width;
+      pic.width = 460;
+      pic.height = Math.round(pic.height * k);
+    }
+    if (altText) pic.altTextDescription = altText;
+    p.alignment = Word.Alignment.centered;
+    await ctx.sync();
+    undoable = wrap(p, id);
+    await ctx.sync().catch(() => {
+      undoable = false;
+    });
+    p.getRange(Word.RangeLocation.end).select();
+    await ctx.sync().catch(() => undefined);
+  });
+  if (undoable) pushUndo({ kind: "insert", id, label, originalOoxml: null, originalText: "", track: false });
 }
 
 /** Scrolls to and selects paragraph `n` (1-based, as numbered by getDocumentParagraphs). */

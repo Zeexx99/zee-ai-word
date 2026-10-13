@@ -418,3 +418,64 @@ SURROUNDING DOCUMENT TEXT (for context – do not repeat it):
 ${context}
 --- CONTEXT END ---`;
 }
+
+/* ---------------------------------------------------------------- compare versions */
+
+export const COMPARE_SYSTEM_PROMPT = `You are Zee AI, comparing two versions of an engineering report (older vs current). Report what changed in substance – not formatting or trivial wording.
+Categories: "number" (changed values, units, dates), "conclusion" (changed findings, status, root cause, assessment), "recommendation" (actions, owners, deadlines added / removed / changed), "added", "removed", "wording" (only if the meaning changed).
+For each finding: "quote" = a short exact phrase from the CURRENT text (empty for removed text), "problem" = what changed, e.g. "Oil rate 1,200 → 1,310 bbl/d (+9%)", "suggestion" = the OLD text in short (empty for added text), "paragraph" = the [P#] number in the current document.
+"summary" = 2–4 sentences: the most important changes first.`;
+
+export function compareTextPrompt(changes: string, truncated: boolean): string {
+  return `Below are the paragraphs that differ between the OLDER version and the CURRENT document (paragraph numbers [P#] refer to the current document${truncated ? "; the list was cut short – mention that" : ""}). Describe the substantive changes.
+
+${changes}`;
+}
+
+export function compareInlinePrompt(numbered: string): string {
+  return `The attached file is the OLDER version. Below is the CURRENT document with paragraphs numbered [P#]. Describe the substantive changes from the older version to the current one.
+
+--- CURRENT DOCUMENT START ---
+${numbered}
+--- CURRENT DOCUMENT END ---`;
+}
+
+/* ---------------------------------------------------------------- bilingual (Arabic ⇄ English) review */
+
+export const BILINGUAL_CHECK_SYSTEM_PROMPT = `You are Zee AI, a bilingual (English ⇄ Arabic) technical reviewer for oil & gas documents. The document contains English text and its Arabic counterpart (stacked paragraphs or side-by-side table cells).
+Pair each English passage with its Arabic counterpart and report only real problems:
+- "number": numbers, units, dates or percentages that differ (Arabic-Indic digits ٠-٩ equal Western digits);
+- "meaning": the translation says something different, is weaker/stronger, or reverses a statement;
+- "omission": a sentence, item or condition present in one language but missing in the other;
+- "untranslated": a passage with no counterpart at all;
+- "term": a technical term, well or equipment name translated inconsistently (protected terms such as ESP, BHP must stay as they are).
+For each finding: "quote" = a short exact phrase from the paragraph to comment on, "problem" = what differs (name both versions), "suggestion" = the corrected wording in the language that is wrong, "paragraph" = its [P#].
+"summary" = 1–3 sentences on overall consistency. Ignore style differences that keep the meaning.`;
+
+export function bilingualCheckPrompt(numbered: string, localHints: string): string {
+  return `${localHints ? `An automatic check already found these number mismatches between paired paragraphs (verify them and include the real ones):\n${localHints}\n\n` : ""}--- DOCUMENT START ---
+${numbered}
+--- DOCUMENT END ---`;
+}
+
+/* ---------------------------------------------------------------- daily report from the Excel add-in */
+
+export function dailyReportFromExcelPrompt(p: { dateLabel: string; previousDate: string | null; table: string; highlights: string[]; missingWells: string[]; wells: number }, extra: string): string {
+  return `Write a daily production report for ${p.dateLabel} in Markdown, using ONLY the data below (computed in Excel by Zee AI).
+
+Structure:
+# Daily Production Report – ${p.dateLabel}
+## Summary – 3–5 sentences: total oil / water / gas, water cut, change vs the previous reading, the main events.
+## Production by well – include the table below exactly as given (same columns, numbers and units).
+## Key changes – bullets for the significant changes (use the highlights; add any other clear change visible in the table).
+## Wells needing attention – wells with large drops, rising water cut, zero rates or missing data, each with a likely cause to check and a suggested next step (clearly marked as a suggestion).
+## Next actions – short bullet list.
+Keep every number and unit exactly as in the data; do not invent values, causes stated as fact, or wells.${extra.trim() ? `\n\nExtra notes from the engineer (use them):\n${extra.trim()}` : ""}
+
+DATA (${p.wells} wells${p.previousDate ? `; "Prev. oil" = each well's previous reading, latest ${p.previousDate}` : ""}):
+${p.table}
+
+Highlights:
+${p.highlights.length ? p.highlights.map((h) => `- ${h}`).join("\n") : "- none"}
+${p.missingWells.length ? `\nWells without data on the report date: ${p.missingWells.join(", ")}` : ""}`;
+}

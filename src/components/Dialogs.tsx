@@ -20,6 +20,7 @@ import { DiffView } from "./DiffView";
 import { DEFAULT_REFERENCE_QUESTION, TONES, type DraftLength, type ToneId } from "../services/prompts";
 import type { ReportTemplate } from "../services/templates";
 import { readReferenceFile, type ReferencePayload } from "../utils/files";
+import { loadDailyReportPackage, parseDailyReportPackage, type DailyReportPackage } from "../qol/sharedPackage";
 
 /* ------------------------------------------------------------------ confirm (optionally with a diff) */
 
@@ -157,7 +158,19 @@ export interface ReferenceChoice {
   question: string;
 }
 
-export function ReferenceDialog({ open, onClose, onRun }: { open: boolean; onClose: () => void; onRun: (c: ReferenceChoice) => void }) {
+export function ReferenceDialog({
+  open,
+  onClose,
+  onRun,
+  mode = "reference",
+}: {
+  open: boolean;
+  onClose: () => void;
+  onRun: (c: ReferenceChoice) => void;
+  /** "compare" = the file is an older version of this document. */
+  mode?: "reference" | "compare";
+}) {
+  const compare = mode === "compare";
   const [file, setFile] = useState<ReferencePayload | null>(null);
   const [error, setError] = useState("");
   const [reading, setReading] = useState(false);
@@ -187,11 +200,15 @@ export function ReferenceDialog({ open, onClose, onRun }: { open: boolean; onClo
     <Dialog open={open} onOpenChange={(_, d) => !d.open && onClose()}>
       <DialogSurface className="zee-dialog">
         <DialogBody>
-          <DialogTitle>Check against a reference</DialogTitle>
+          <DialogTitle>{compare ? "Compare with an older version" : "Check against a reference"}</DialogTitle>
           <DialogContent className="zee-form">
             <Field
-              label="Reference document"
-              hint="A procedure, standard, specification or earlier report: PDF, DOCX, TXT/MD/CSV (max 15 MB). It is sent to Gemini for this check only."
+              label={compare ? "Older version of this document" : "Reference document"}
+              hint={
+                compare
+                  ? "DOCX or TXT works best (only the changed paragraphs are sent). A PDF is sent whole. Max 15 MB."
+                  : "A procedure, standard, specification or earlier report: PDF, DOCX, TXT/MD/CSV (max 15 MB). It is sent to Gemini for this check only."
+              }
               validationMessage={error || undefined}
             >
               <div className="zee-file-pick">
@@ -200,14 +217,20 @@ export function ReferenceDialog({ open, onClose, onRun }: { open: boolean; onClo
                 {file && <span className="zee-chip">📎 {file.name}</span>}
               </div>
             </Field>
-            <Field label="What should be checked?">
-              <Textarea value={question} rows={4} resize="vertical" onChange={(_, d) => setQuestion(d.value)} />
-            </Field>
-            <p className="zee-muted">Findings point to the paragraph in your document and can be added as Word comments.</p>
+            {!compare && (
+              <Field label="What should be checked?">
+                <Textarea value={question} rows={4} resize="vertical" onChange={(_, d) => setQuestion(d.value)} />
+              </Field>
+            )}
+            <p className="zee-muted">
+              {compare
+                ? "You get the changes in numbers, conclusions and recommendations, each pointing to its paragraph – add them as Word comments if you like."
+                : "Findings point to the paragraph in your document and can be added as Word comments."}
+            </p>
           </DialogContent>
           <DialogActions>
-            <Button appearance="primary" disabled={!file || !question.trim()} onClick={() => file && onRun({ reference: file, question })}>
-              Check
+            <Button appearance="primary" disabled={!file || (!compare && !question.trim())} onClick={() => file && onRun({ reference: file, question })}>
+              {compare ? "Compare" : "Check"}
             </Button>
             <Button onClick={onClose}>Cancel</Button>
           </DialogActions>
@@ -267,6 +290,83 @@ export function TemplateDialog({
           <DialogActions>
             <Button appearance="primary" onClick={() => template && onRun({ template, fillFromSelection: fill && hasSelection, location })}>
               {fill && hasSelection ? "Fill in with AI" : "Insert template"}
+            </Button>
+            <Button onClick={onClose}>Cancel</Button>
+          </DialogActions>
+        </DialogBody>
+      </DialogSurface>
+    </Dialog>
+  );
+}
+
+/* ------------------------------------------------------------------ daily report from the Excel add-in */
+
+export interface DailyFromExcelChoice {
+  pkg: DailyReportPackage;
+  notes: string;
+  location: "after" | "end";
+  includeChart: boolean;
+}
+
+export function DailyFromExcelDialog({ open, onClose, onRun }: { open: boolean; onClose: () => void; onRun: (c: DailyFromExcelChoice) => void }) {
+  const [pkg, setPkg] = useState<DailyReportPackage | null>(null);
+  const [paste, setPaste] = useState("");
+  const [error, setError] = useState("");
+  const [notes, setNotes] = useState("");
+  const [location, setLocation] = useState<"after" | "end">("after");
+  const [chart, setChart] = useState(true);
+  useEffect(() => {
+    if (!open) return;
+    setPkg(loadDailyReportPackage());
+    setPaste("");
+    setError("");
+  }, [open]);
+  const age = pkg ? Math.round((Date.now() - Date.parse(pkg.createdAt)) / 60000) : 0;
+  return (
+    <Dialog open={open} onOpenChange={(_, d) => !d.open && onClose()}>
+      <DialogSurface className="zee-dialog">
+        <DialogBody>
+          <DialogTitle>Daily report from Excel</DialogTitle>
+          <DialogContent className="zee-form">
+            {pkg ? (
+              <p className="zee-dialog-text">
+                Found the report for <b>{pkg.dateLabel}</b> – {pkg.wells} wells, made in Excel {age < 1 ? "just now" : age < 120 ? `${age} min ago` : new Date(pkg.createdAt).toLocaleString()}
+                {pkg.chartPng ? ", with a chart" : ""}.
+              </p>
+            ) : (
+              <p className="zee-dialog-text">
+                No report from Excel found here. In Excel run <b>Petroleum → Daily production report</b> – it also copies the report to the clipboard: paste it below.
+              </p>
+            )}
+            <Field label={pkg ? "Use a different one (paste from Excel)" : "Paste the report from Excel"} validationMessage={error || undefined}>
+              <Textarea
+                rows={2}
+                value={paste}
+                placeholder="Ctrl+V"
+                onChange={(_, d) => {
+                  setPaste(d.value);
+                  if (!d.value.trim()) return setError("");
+                  try {
+                    setPkg(parseDailyReportPackage(d.value));
+                    setError("");
+                  } catch (e) {
+                    setError((e as Error).message);
+                  }
+                }}
+              />
+            </Field>
+            <Field label="Extra notes for the report (optional)" hint="Events, shut-ins, workovers… Zee AI works them into the text.">
+              <Textarea rows={3} value={notes} onChange={(_, d) => setNotes(d.value)} placeholder="e.g. W-7 shut in for ESP change since 06:00" />
+            </Field>
+            {pkg?.chartPng && <Checkbox checked={chart} onChange={(_, d) => setChart(!!d.checked)} label="Offer the chart for insertion (button under the report)" />}
+            <RadioGroup layout="horizontal" value={location} onChange={(_, d) => setLocation(d.value as "after" | "end")}>
+              <Radio value="after" label="At the cursor" />
+              <Radio value="end" label="At the end" />
+            </RadioGroup>
+          </DialogContent>
+          <DialogActions>
+            <Button appearance="primary" disabled={!pkg} onClick={() => pkg && onRun({ pkg, notes, location, includeChart: chart && !!pkg.chartPng })}>
+              Write report
             </Button>
             <Button onClick={onClose}>Cancel</Button>
           </DialogActions>

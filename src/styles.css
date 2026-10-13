@@ -930,3 +930,62 @@ body.zee-light {
 .zee-history-popover {
   max-width: 340px;
 }
+
+/* Section navigator */
+.zee-sections {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--zee-border);
+  background: var(--zee-surface);
+  max-height: 38vh;
+  min-height: 0;
+}
+.zee-sections-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+}
+.zee-sections-list {
+  overflow-y: auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.zee-section-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  font: inherit;
+  font-size: 12px;
+  text-align: start;
+  color: var(--zee-text);
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+  padding: 3px 6px;
+  cursor: pointer;
+}
+.zee-section-item:hover,
+.zee-section-item:focus-visible {
+  background: var(--zee-bg);
+  outline: none;
+}
+.zee-section-active {
+  background: var(--zee-bg);
+  box-shadow: inset 3px 0 0 var(--zee-user);
+}
+.zee-section-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.zee-section-words {
+  font-size: 11px;
+  color: var(--zee-muted);
+}

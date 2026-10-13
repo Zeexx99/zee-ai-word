@@ -34,6 +34,9 @@ export interface QuickActionHandlers {
   onReference: () => void;
   onPicture: (kind: "caption" | "alt" | "describe") => void;
   onTemplate: (t: ReportTemplate) => void;
+  onCompare: () => void;
+  onBilingualCheck: () => void;
+  onDailyFromExcel: () => void;
 }
 
 /** Keys used to count how often each menu item is used (most used float to the top). */
@@ -203,6 +206,12 @@ export function QuickActions(
             <MenuItem onClick={p.onReference} secondaryContent="PDF / DOCX">
               Check against a reference…
             </MenuItem>
+            <MenuItem onClick={p.onCompare} secondaryContent="older version">
+              Compare with an older version…
+            </MenuItem>
+            <MenuItem onClick={p.onBilingualCheck} secondaryContent="EN ⇄ AR">
+              Arabic ⇄ English consistency
+            </MenuItem>
           </MenuList>
         </MenuPopover>
       </Menu>
@@ -231,6 +240,10 @@ export function QuickActions(
         </MenuTrigger>
         <MenuPopover className="zee-lang-popover">
           <MenuList>
+            <MenuItem onClick={p.onDailyFromExcel} secondaryContent="from Excel">
+              Daily report from Excel…
+            </MenuItem>
+            <MenuDivider />
             <MenuGroupHeader>Report templates – most used first</MenuGroupHeader>
             {templates.map((t) => (
               <MenuItem key={t.id} title={t.description} onClick={() => p.onTemplate(t)}>

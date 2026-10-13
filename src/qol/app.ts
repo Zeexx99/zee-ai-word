@@ -21,6 +21,16 @@ export interface ReleaseNote {
 /** Shown once after an update ("What's new"). Newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "1.4.0",
+    items: [
+      "Section navigator (list icon in the header): click a heading to select that section – quick actions and the chat then work on it.",
+      "Review → Compare with an older version: what changed in numbers, conclusions and recommendations, each linked to its paragraph (add as comments).",
+      "Review → Arabic ⇄ English consistency: finds mismatched numbers, meaning changes and missing translations between the English and Arabic text.",
+      "Templates → Daily report from Excel: writes the daily production report around the table and chart built in the Excel add-in.",
+      "Offline queue: requests that fail because the connection dropped are sent again automatically when it's back.",
+    ],
+  },
+  {
     version: "1.3.0",
     items: [
       "New “General” scope (next to Selected text / Whole document): describe what you want and Zee finds the right part of the document, selects it and edits it, adds new text in the right place, or answers from the relevant paragraphs.",

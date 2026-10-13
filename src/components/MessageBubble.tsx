@@ -31,6 +31,7 @@ import { modelLabel } from "../services/settingsService";
 import { LOCATION_LABELS, toClipboardText, type InsertLocation } from "../services/wordService";
 import { DiffView } from "./DiffView";
 import { ErrorBubble, RegenerateButton, UserMessageTools } from "../qol/MessageTools";
+import { Image16Regular } from "@fluentui/react-icons";
 
 const rehypePlugins: Options["rehypePlugins"] = [[rehypeHighlight, { languages: common, detect: false }]];
 const remarkPlugins: Options["remarkPlugins"] = [remarkGfm];
@@ -282,6 +283,32 @@ function PictureApplyBar({ message }: { message: ChatMessage }) {
   );
 }
 
+/** "Insert chart" under a daily report written from Excel data. */
+function ChartButton({ message }: { message: ChatMessage }) {
+  const actions = useInsertActions();
+  const [working, setWorking] = useState(false);
+  return (
+    <div className="zee-insert-bar">
+      <Button
+        size="small"
+        icon={working ? <Spinner size="extra-tiny" /> : <Image16Regular />}
+        disabled={!actions.canInsert || working}
+        onClick={async () => {
+          setWorking(true);
+          try {
+            await actions.insertChart(message);
+          } finally {
+            setWorking(false);
+          }
+        }}
+      >
+        Insert the Excel chart at the cursor
+      </Button>
+      <span className="zee-muted">Tip: insert the report first – the cursor then sits at its end.</span>
+    </div>
+  );
+}
+
 function CodeBlock({ children, text, lang }: { children: ReactNode; text: string; lang: string }) {
   return (
     <div className="zee-code">
@@ -417,6 +444,7 @@ function MessageBubbleImpl({ message }: { message: ChatMessage }) {
       )}
       {message.pictureResult && hasResult && <PictureApplyBar message={message} />}
       {!isDocFindings && !message.tableEdit && !message.pictureResult && hasResult && !noIssues && <InsertBar message={message} />}
+      {message.chartFor && hasResult && <ChartButton message={message} />}
       {isEdit && message.issues && !noIssues && (
         <div className="zee-insert-bar">
           <CommentButton message={message} />

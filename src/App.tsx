@@ -30,6 +30,7 @@ import {
   DismissCircle20Regular,
   DocumentAdd20Regular,
   DocumentCheckmark20Regular,
+  TextBulletListTree20Regular,
   DocumentEdit20Filled,
   DocumentEdit20Regular,
   Settings20Regular,
@@ -44,8 +45,11 @@ import { ChatInput } from "./components/ChatInput";
 import { QuickActions, useKey } from "./components/QuickActions";
 // Imported eagerly (never lazy-loaded): a separate chunk breaks when Office holds a cached page from an older deploy.
 import { SettingsDrawer } from "./components/SettingsDrawer";
+import { SectionNavigator } from "./components/SectionNavigator";
 import {
   ConfirmDialog,
+  DailyFromExcelDialog,
+  type DailyFromExcelChoice,
   DraftDialog,
   ReferenceDialog,
   TemplateDialog,
@@ -91,6 +95,8 @@ import {
   onSelectionChange,
   onUndoChange,
   countZeeRevisions,
+  getOutline,
+  insertPictureAfterCursor,
   placeCursorAfterParagraph,
   resolveZeeRevisions,
   selectParagraph,
@@ -136,6 +142,12 @@ import {
   translatePrompt,
   bilingualPrompt,
   BILINGUAL_SYSTEM_PROMPT,
+  BILINGUAL_CHECK_SYSTEM_PROMPT,
+  COMPARE_SYSTEM_PROMPT,
+  bilingualCheckPrompt,
+  compareInlinePrompt,
+  compareTextPrompt,
+  dailyReportFromExcelPrompt,
   LOCATE_SCHEMA,
   LOCATE_SYSTEM_PROMPT,
   generalEditPrompt,
@@ -150,9 +162,14 @@ import { getDocTitle } from "./services/chatStore";
 import { countWords, preserveEdges, shorten, truncateMiddle } from "./utils/text";
 import { looksLikeMarkdown, markdownToPlain } from "./utils/mdToHtml";
 import { chunkParagraphs, numberParagraphs } from "./utils/chunks";
+import { buildSections, type Section } from "./utils/sections";
+import { numberMismatches } from "./utils/bilingual";
+import { blocksForPrompt, diffParagraphs } from "./utils/versionDiff";
+import { loadDailyReportPackage } from "./qol/sharedPackage";
 import { normalizeLocate, paraLabel, paraListLabel, relevantExcerpt, type LocatePlan, type LocateResult } from "./utils/locate";
 import { UpdateBanners, useUpdates } from "./qol/UpdateBanners";
 import { recordUsage, usageForDay } from "./qol/usageLog";
+import { useOfflineQueue } from "./qol/offline";
 import { buildDiagnostics } from "./qol/diagnostics";
 import { bumpUse, loadUseCounts } from "./qol/recent";
 
@@ -352,6 +369,8 @@ export default function App() {
     locateAbort.current?.abort();
     stop();
   }, [stop]);
+  const retryById = useCallback((id: string) => void retry(id), [retry]);
+  const offline = useOfflineQueue(messages, working, retryById);
   const abortable = useRef(false);
   abortable.current = busy;
   // Esc stops a running answer from anywhere in the pane.
@@ -918,6 +937,211 @@ export default function App() {
     [ensureConfigured, runTask, toast, toastError]
   );
 
+  /* ------------------------------------------------------------ compare with an older version */
+  const [compareOpen, setCompareOpen] = useState(false);
+  const onCompare = useCallback(
+    async (c: ReferenceChoice) => {
+      setCompareOpen(false);
+      if (!ensureConfigured()) return;
+      let paras: string[];
+      try {
+        paras = await getDocumentParagraphs();
+      } catch (e) {
+        toastError(e);
+        return;
+      }
+      const toIssues = (findings: unknown): GrammarIssue[] =>
+        (Array.isArray(findings) ? (findings as DocFinding[]) : [])
+          .filter((f) => f && typeof f.problem === "string" && f.problem.trim())
+          .map((f) => ({
+            original: "",
+            fix: "",
+            type: typeof f.category === "string" ? f.category : "change",
+            reason: `${f.problem}${typeof f.suggestion === "string" && f.suggestion.trim() ? ` (was: “${shorten(f.suggestion, 160)}”)` : ""}`,
+            paragraph: Number.isFinite(f.paragraph) && f.paragraph > 0 ? Math.round(f.paragraph) : undefined,
+          }));
+      if (c.reference.kind === "text") {
+        const blocks = diffParagraphs(c.reference.text.split(/\r?\n/), paras);
+        if (!blocks.length) {
+          toast("success", "No differences", `The text of “${c.reference.name}” matches this document.`);
+          return;
+        }
+        const changes = blocksForPrompt(blocks);
+        await runTask({
+          display: `Compare with “${c.reference.name}”`,
+          prompt: `Compare the document with the older version "${c.reference.name}".`,
+          estimateText: changes.text,
+          contextLabel: `${blocks.length} changed part${blocks.length === 1 ? "" : "s"} vs ${c.reference.name}`,
+          assistant: { kind: "action", title: "Version comparison", scope: "document", format: "plain", issueStyle: "finding" },
+          work: async ({ settings, signal, system, addUsage }) => {
+            const { data, usage } = await generateJson<{ summary: string; findings: DocFinding[] }>({
+              settings,
+              prompt: compareTextPrompt(changes.text, changes.truncated),
+              systemInstruction: system(COMPARE_SYSTEM_PROMPT),
+              schema: FINDINGS_SCHEMA,
+              signal,
+            });
+            addUsage(usage);
+            return { text: data?.summary ?? "", issues: toIssues(data?.findings) };
+          },
+        });
+        return;
+      }
+      const t = truncateMiddle(numberParagraphs(paras), Math.max(settingsRef.current.maxContextChars, 120_000));
+      const file = c.reference;
+      await runTask({
+        display: `Compare with “${file.name}”`,
+        prompt: `Compare the document with the older version "${file.name}".`,
+        estimateText: t.text + "x".repeat(Math.min(4_000_000, file.data.length / 3)),
+        contextLabel: `Document vs ${file.name}`,
+        assistant: { kind: "action", title: "Version comparison", scope: "document", format: "plain", issueStyle: "finding" },
+        work: async ({ settings, signal, system, addUsage }) => {
+          const r = await generateFromParts<{ summary: string; findings: DocFinding[] }>({
+            settings,
+            parts: [{ text: `OLDER VERSION: ${file.name} (attached)` }, { inlineData: { mimeType: file.mimeType, data: file.data } }, { text: compareInlinePrompt(t.text) }],
+            systemInstruction: system(COMPARE_SYSTEM_PROMPT),
+            schema: FINDINGS_SCHEMA,
+            signal,
+          });
+          addUsage(r.usage);
+          return { text: r.data?.summary ?? "", issues: toIssues(r.data?.findings) };
+        },
+      });
+    },
+    [ensureConfigured, runTask, toast, toastError]
+  );
+
+  /* ------------------------------------------------------------ Arabic ⇄ English consistency */
+  const onBilingualCheck = useCallback(async () => {
+    if (!ensureConfigured()) return;
+    if (!inWord) {
+      toast("info", "Open Zee AI in Word", "The bilingual check reads the whole document.");
+      return;
+    }
+    let paras: string[];
+    try {
+      paras = await getDocumentParagraphs();
+    } catch (e) {
+      toastError(e);
+      return;
+    }
+    const local = numberMismatches(paras);
+    const joined = paras.join("\n");
+    if (!/[\u0600-\u06FF]/.test(joined) || !/[A-Za-z]{3}/.test(joined)) {
+      toast("info", "Not a bilingual document", "This check needs English and Arabic text in the same document (stacked paragraphs or side-by-side tables).");
+      return;
+    }
+    const hints = local.mismatches
+      .slice(0, 60)
+      .map((m) => `- [P${m.en}] (English) ↔ [P${m.ar}] (Arabic): only in English ${m.onlyInEnglish.join(", ") || "–"}; only in Arabic ${m.onlyInArabic.join(", ") || "–"}`)
+      .join("\n");
+    const t = truncateMiddle(numberParagraphs(paras), Math.max(settingsRef.current.maxContextChars, 120_000));
+    await runTask({
+      display: "Arabic ⇄ English consistency check",
+      prompt: "Check that the English and Arabic texts say the same thing.",
+      estimateText: t.text,
+      contextLabel: `Whole document · ${local.pairs} EN/AR pairs found${local.mismatches.length ? ` · ${local.mismatches.length} with different numbers` : ""}`,
+      assistant: { kind: "action", title: "Bilingual consistency", scope: "document", format: "plain", issueStyle: "finding" },
+      work: async ({ settings, signal, system, addUsage }) => {
+        const { data, usage } = await generateJson<{ summary: string; findings: DocFinding[] }>({
+          settings,
+          prompt: bilingualCheckPrompt(t.text, hints),
+          systemInstruction: system(BILINGUAL_CHECK_SYSTEM_PROMPT),
+          schema: FINDINGS_SCHEMA,
+          signal,
+        });
+        addUsage(usage);
+        const issues = findingsToIssues(data?.findings);
+        // Keep every number mismatch the local check found, even if the model missed it.
+        const covered = new Set(issues.map((i) => i.paragraph));
+        for (const m of local.mismatches) {
+          if (covered.has(m.en) || covered.has(m.ar)) continue;
+          issues.push({
+            original: "",
+            fix: "",
+            type: "number",
+            reason: `Numbers differ from the ${"Arabic"} counterpart ¶${m.ar}: only in English ${m.onlyInEnglish.join(", ") || "–"}; only in Arabic ${m.onlyInArabic.join(", ") || "–"}.`,
+            paragraph: m.en,
+          });
+        }
+        return { text: `${data?.summary ?? ""}${issues.length ? ` ${issues.length} finding${issues.length === 1 ? "" : "s"} – add them as comments to fix each in place.` : ""}`.trim(), issues };
+      },
+    });
+  }, [ensureConfigured, inWord, runTask, toast, toastError]);
+
+  /* ------------------------------------------------------------ daily report from the Excel add-in */
+  const [dailyOpen, setDailyOpen] = useState(false);
+  const charts = useRef(new Map<string, string>());
+  const onDailyFromExcel = async (c: DailyFromExcelChoice) => {
+    setDailyOpen(false);
+    if (!ensureConfigured()) return;
+    const p = c.pkg;
+    if (c.includeChart && p.chartPng) charts.current.set(p.reportDate, p.chartPng);
+    const table = tableToMarkdown(p.table.map((r) => r.map((v) => (typeof v === "number" ? v.toLocaleString(undefined, { maximumFractionDigits: 2 }) : String(v)))));
+    await runAction({
+      kind: "draft",
+      title: `Daily report – ${p.dateLabel}`,
+      display: `Daily production report for ${p.dateLabel} from Excel (${p.wells} wells)`,
+      prompt: dailyReportFromExcelPrompt({ ...p, table }, c.notes),
+      system: DRAFT_SYSTEM_PROMPT,
+      contextLabel: `Excel sheet “${p.sheet}” · ${p.wells} wells`,
+      format: "markdown",
+      defaultLocation: c.location,
+      extra: c.includeChart ? { chartFor: p.reportDate } : undefined,
+    });
+  };
+  const insertChart = useCallback(
+    async (m: ChatMessage) => {
+      const key = m.chartFor ?? "";
+      const saved = loadDailyReportPackage();
+      const png = charts.current.get(key) ?? (saved?.reportDate === key ? saved.chartPng : undefined);
+      if (!png) {
+        toast("warning", "Chart not available", "Run Petroleum → Daily production report in Excel again, then click Insert chart.");
+        return;
+      }
+      try {
+        await insertPictureAfterCursor(png, "Excel chart", `Oil rate by well – ${key}`);
+        toast("success", "Chart inserted", "Below the cursor's paragraph. Undo with ↶.");
+      } catch (e) {
+        toastError(e);
+      }
+    },
+    [toast, toastError]
+  );
+
+  /* ------------------------------------------------------------ section navigator */
+  const [sectionsOpen, setSectionsOpen] = useState(false);
+  const [sections, setSections] = useState<Section[]>([]);
+  const [sectionsLoading, setSectionsLoading] = useState(false);
+  const [activeSection, setActiveSection] = useState<number | null>(null);
+  const loadSections = useCallback(async () => {
+    if (!inWord) return;
+    setSectionsLoading(true);
+    try {
+      setSections(buildSections(await getOutline()));
+    } catch (e) {
+      toastError(e);
+    } finally {
+      setSectionsLoading(false);
+    }
+  }, [inWord, toastError]);
+  const toggleSections = () => {
+    const open = !sectionsOpen;
+    setSectionsOpen(open);
+    if (open) void loadSections();
+  };
+  const pickSection = async (sec: Section) => {
+    try {
+      const text = await selectParagraphRange(sec.start, sec.end);
+      setActiveSection(sec.start);
+      if (settingsRef.current.docContext !== "selection") updateSettings({ docContext: "selection" });
+      toast("info", `“${shorten(sec.title, 50)}” selected`, `${countWords(text).toLocaleString()} words. Quick actions and your next chat message now work on this section.`);
+    } catch (e) {
+      toastError(e);
+      void loadSections();
+    }
+  };
+
   /* ------------------------------------------------------------ tables */
   const onTable = async (action: "explain" | "commentary" | "clean" | "fromNotes") => {
     if (!ensureConfigured()) return;
@@ -1266,8 +1490,8 @@ export default function App() {
   );
 
   const insertActions = useMemo<InsertActions>(
-    () => ({ insert, comment, goToParagraph, applyTable, applyPicture, canInsert: inWord, retry: (id) => void retry(id), editPrompt, copyDiagnostics, busy: working }),
-    [insert, comment, goToParagraph, applyTable, applyPicture, inWord, retry, editPrompt, copyDiagnostics, working]
+    () => ({ insert, comment, goToParagraph, applyTable, applyPicture, insertChart, canInsert: inWord, retry: (id) => void retry(id), editPrompt, copyDiagnostics, busy: working }),
+    [insert, comment, goToParagraph, applyTable, applyPicture, insertChart, inWord, retry, editPrompt, copyDiagnostics, working]
   );
 
   /* ------------------------------------------------------------ ribbon / right-click / keyboard commands */
@@ -1380,6 +1604,9 @@ export default function App() {
                 </MenuPopover>
               </Menu>
             )}
+            <Tooltip content="Sections – pick a heading to work on that part" relationship="label">
+              <ToggleButton appearance="subtle" size="small" checked={sectionsOpen} icon={<TextBulletListTree20Regular />} onClick={toggleSections} disabled={!inWord} />
+            </Tooltip>
             <Tooltip content={dark ? "Switch to light mode" : "Switch to dark mode"} relationship="label">
               <Button appearance="subtle" size="small" icon={dark ? <WeatherSunny20Regular /> : <WeatherMoon20Regular />} onClick={() => updateSettings({ theme: dark ? "light" : "dark" })} />
             </Tooltip>
@@ -1409,6 +1636,14 @@ export default function App() {
           </header>
 
           <UpdateBanners newerVersion={updates.newerVersion} notes={updates.notes} onDismissNotes={updates.dismissNotes} />
+          {!offline.online && (
+            <MessageBar intent="warning" className="zee-banner">
+              <MessageBarBody>
+                You're offline. {offline.queued ? `${offline.queued} request${offline.queued === 1 ? "" : "s"} will be sent` : "Requests that fail are sent"} again automatically when the connection is back.
+              </MessageBarBody>
+            </MessageBar>
+          )}
+
           {!inWord && (
             <MessageBar intent="warning" className="zee-banner">
               <MessageBarBody>Preview mode – open Zee AI from Word to read and edit documents. Chat still works.</MessageBarBody>
@@ -1425,8 +1660,15 @@ export default function App() {
             </MessageBar>
           )}
 
+          {sectionsOpen && (
+            <SectionNavigator sections={sections} loading={sectionsLoading} active={activeSection} onRefresh={loadSections} onPick={pickSection} onClose={() => setSectionsOpen(false)} />
+          )}
+
           <QuickActions
             disabled={working}
+            onCompare={() => (ensureConfigured() ? setCompareOpen(true) : undefined)}
+            onBilingualCheck={onBilingualCheck}
+            onDailyFromExcel={() => setDailyOpen(true)}
             useCounts={useCounts}
             preferredLanguage={settings.translateTo}
             onRewrite={onRewrite}
@@ -1492,6 +1734,8 @@ export default function App() {
           )}
           <DraftDialog open={draftOpen} hasSelection={selectionWords > 0} onClose={() => setDraftOpen(false)} onRun={onDraft} />
           <ReferenceDialog open={referenceOpen} onClose={() => setReferenceOpen(false)} onRun={onReference} />
+          <ReferenceDialog mode="compare" open={compareOpen} onClose={() => setCompareOpen(false)} onRun={onCompare} />
+          <DailyFromExcelDialog open={dailyOpen} onClose={() => setDailyOpen(false)} onRun={onDailyFromExcel} />
           <TemplateDialog template={templatePick} hasSelection={selectionWords > 0} onClose={() => setTemplatePick(null)} onRun={onTemplateRun} />
           <ConfirmDialog state={confirmState} onResult={onConfirmResult} />
           <Toaster toasterId={toasterId} position="top-end" />
