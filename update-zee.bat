@@ -65,6 +65,6 @@ echo cache cleared >> %LOG%
 echo [OK] Cache cleared.
 echo.
 echo [4/4] When the GitHub check is green, open Word - Home tab - Zee AI.
-echo      Settings - About shows the build date, so you can confirm the new version loaded.
+echo      Settings - Updates shows the version and build time. Tip: update-all.bat updates Excel and Word together.
 echo.
 pause

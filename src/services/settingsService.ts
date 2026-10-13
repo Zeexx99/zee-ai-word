@@ -14,8 +14,12 @@ export type AuthMode = "apiKey" | "google" | "proxy";
 /** "auto" follows the Office theme (or the OS colour scheme outside Office). */
 export type ThemeMode = "auto" | "light" | "dark";
 
-/** How much of the document the chat sends with each message. */
-export type DocContext = "none" | "selection" | "document";
+/**
+ * How much of the document the chat sends with each message.
+ * "general" = Zee AI first finds the part of the document the request is about, then edits it,
+ * adds new text there, or answers from those paragraphs.
+ */
+export type DocContext = "none" | "selection" | "document" | "general";
 
 /** A user-defined quick action (shown under "My actions"). */
 export interface CustomAction {
@@ -108,6 +112,9 @@ export interface ZeeSettings {
   /** Where the team config comes from: "", "file", an https URL, or "proxy". */
   teamSource: string;
   teamLoadedAt: number;
+  /** Optional prices (USD per 1M tokens) for the usage meter's cost estimate. 0 = unknown. */
+  priceInPerM: number;
+  priceOutPerM: number;
 }
 
 export const DEFAULT_SETTINGS: ZeeSettings = {
@@ -138,6 +145,8 @@ export const DEFAULT_SETTINGS: ZeeSettings = {
   team: null,
   teamSource: "",
   teamLoadedAt: 0,
+  priceInPerM: 0,
+  priceOutPerM: 0,
 };
 
 export const STORAGE_KEY = "zeeai.word.settings.v1";
@@ -146,7 +155,7 @@ export function sanitizeSettings(parsed: Partial<ZeeSettings> | null | undefined
   const merged: ZeeSettings = { ...DEFAULT_SETTINGS, ...(parsed ?? {}) };
   if (!["auto", "light", "dark"].includes(merged.theme)) merged.theme = "auto";
   if (!["apiKey", "google", "proxy"].includes(merged.authMode)) merged.authMode = "apiKey";
-  if (!["none", "selection", "document"].includes(merged.docContext)) merged.docContext = "selection";
+  if (!["none", "selection", "document", "general"].includes(merged.docContext)) merged.docContext = "selection";
   if (!Array.isArray(merged.fetchedModels)) merged.fetchedModels = [];
   if (typeof merged.model !== "string" || !merged.model.trim()) merged.model = DEFAULT_SETTINGS.model;
   if (!Number.isFinite(merged.costGuardTokens) || merged.costGuardTokens < 0) merged.costGuardTokens = DEFAULT_SETTINGS.costGuardTokens;
@@ -166,6 +175,8 @@ export function sanitizeSettings(parsed: Partial<ZeeSettings> | null | undefined
   if (typeof merged.bulkModel !== "string" || !merged.bulkModel.trim()) merged.bulkModel = DEFAULT_SETTINGS.bulkModel;
   if (merged.team && (typeof merged.team !== "object" || merged.team.zeeTeamConfig !== 1)) merged.team = null;
   if (typeof merged.teamSource !== "string") merged.teamSource = "";
+  if (!Number.isFinite(merged.priceInPerM) || merged.priceInPerM < 0) merged.priceInPerM = 0;
+  if (!Number.isFinite(merged.priceOutPerM) || merged.priceOutPerM < 0) merged.priceOutPerM = 0;
   return merged;
 }
 

@@ -45,6 +45,13 @@ export interface ChatMessage {
   applied?: InsertLocation;
   model?: string;
   usage?: Usage;
+  /** GeminiError kind of a failed answer (drives the hint under the error). */
+  errorKind?: string;
+  /** "General" scope: the paragraphs Zee AI located for an edit (re-selected before Replace). */
+  paraRange?: [number, number];
+  /** "General" scope: new text goes after this paragraph (number + its text, to find it if it moved). */
+  anchorParagraph?: number;
+  anchorText?: string;
 }
 
 export interface SendInput {
@@ -62,6 +69,8 @@ export interface ActionInput extends SendInput {
   defaultLocation: InsertLocation;
   /** The prompt contains [P#]-numbered paragraphs; make citations clickable. */
   citations?: boolean;
+  /** Extra fields for the answer message (e.g. the located paragraphs of the "General" scope). */
+  extra?: Partial<ChatMessage>;
 }
 
 /** A multi-step job (e.g. chunked whole-document work) that reports progress into one message. */
@@ -97,6 +106,10 @@ export function useChat({ getSettings, onUsage, confirmLarge }: ChatHookOptions)
   const messagesRef = useRef<ChatMessage[]>([]);
   const abortRef = useRef<AbortController | null>(null);
   const saveTimer = useRef(0);
+  /** Set right before a run starts; begin() files it under the new answer's id. */
+  const pendingReplay = useRef<(() => Promise<void>) | null>(null);
+  /** How to run each answer again (Regenerate / Retry). In memory only – older answers fall back to resending the prompt. */
+  const replays = useRef(new Map<string, () => Promise<void>>());
 
   // Persist history, debounced: streaming patches the message many times per second and
   // serialising the whole chat into localStorage on every frame makes long chats sluggish.
@@ -139,6 +152,8 @@ export function useChat({ getSettings, onUsage, confirmLarge }: ChatHookOptions)
   /** Shared start: cost guard, add messages, controller. Returns null if cancelled or busy. */
   const begin = useCallback(
     async (input: SendInput, system: string, assistant: Partial<ChatMessage>, withHistory: boolean) => {
+      const replay = pendingReplay.current;
+      pendingReplay.current = null;
       if (abortRef.current) return null;
       const settings = getSettings();
       const history: ChatTurn[] = withHistory ? buildHistory(messagesRef.current, input.prompt) : [{ role: "user", text: input.prompt }];
@@ -148,6 +163,7 @@ export function useChat({ getSettings, onUsage, confirmLarge }: ChatHookOptions)
       }
       const userMsg: ChatMessage = { id: uid(), role: "user", text: input.display, promptText: input.prompt, contextLabel: input.contextLabel, status: "done" };
       const asstId = uid();
+      if (replay) replays.current.set(asstId, replay);
       update((m) => [...m, userMsg, { id: asstId, role: "assistant", text: "", status: "streaming", model: settings.model, kind: "chat", ...assistant }]);
       const controller = new AbortController();
       abortRef.current = controller;
@@ -168,7 +184,7 @@ export function useChat({ getSettings, onUsage, confirmLarge }: ChatHookOptions)
         e instanceof GeminiError ? e : (e as Error)?.name === "AbortError" ? new GeminiError("Stopped.", "aborted") : new GeminiError((e as Error)?.message ?? String(e));
       patch(asstId, (x) => {
         if (err.kind === "aborted") return { text: x.text ? `${x.text}\n\n_…stopped._` : "_Stopped._", status: "done", original: undefined, defaultLocation: x.text ? x.defaultLocation : undefined };
-        return { text: err.message, status: "error" };
+        return { text: err.message, status: "error", errorKind: err.kind };
       });
     },
     [patch]
@@ -216,27 +232,39 @@ export function useChat({ getSettings, onUsage, confirmLarge }: ChatHookOptions)
 
   /** Free chat (document-aware through the prompt the caller builds). */
   const send = useCallback(
-    (input: SendInput & { citations?: boolean }) =>
-      stream(input, SYSTEM_PROMPT, { kind: "chat", format: "markdown", defaultLocation: "after", citations: input.citations }, true, false),
+    (input: SendInput & { citations?: boolean }) => {
+      // `run` re-registers itself, so an answer that was regenerated can be regenerated again.
+      const run = (): Promise<void> => {
+        pendingReplay.current = run;
+        return stream(input, SYSTEM_PROMPT, { kind: "chat", format: "markdown", defaultLocation: "after", citations: input.citations }, true, false);
+      };
+      return run();
+    },
     [stream]
   );
 
   /** Selection actions and drafting: no chat history (cheaper, more predictable). */
   const runAction = useCallback(
-    (input: ActionInput) =>
-      stream(
-        input,
-        input.system,
-        { kind: input.kind, title: input.title, original: input.original, format: input.format, defaultLocation: input.defaultLocation, citations: input.citations },
-        false,
-        true
-      ),
+    (input: ActionInput) => {
+      const run = (): Promise<void> => {
+        pendingReplay.current = run;
+        return stream(
+          input,
+          input.system,
+          { kind: input.kind, title: input.title, original: input.original, format: input.format, defaultLocation: input.defaultLocation, citations: input.citations, ...input.extra },
+          false,
+          true
+        );
+      };
+      return run();
+    },
     [stream]
   );
 
   /** Grammar & spelling check (JSON mode: corrected text + list of issues). */
   const runGrammar = useCallback(
-    async (input: { display: string; original: string; contextLabel?: string }) => {
+    async function grammar(input: { display: string; original: string; contextLabel?: string }): Promise<void> {
+      pendingReplay.current = () => grammar(input);
       const prompt = grammarPrompt(input.original);
       const ctx = await begin({ display: input.display, prompt, contextLabel: input.contextLabel }, GRAMMAR_SYSTEM_PROMPT, {
         kind: "action",
@@ -270,7 +298,8 @@ export function useChat({ getSettings, onUsage, confirmLarge }: ChatHookOptions)
 
   /** Multi-step job with progress (whole-document summaries and proofreading). */
   const runTask = useCallback(
-    async (input: TaskInput) => {
+    async function task(input: TaskInput): Promise<void> {
+      pendingReplay.current = () => task(input);
       const ctx = await begin({ display: input.display, prompt: input.estimateText, contextLabel: input.contextLabel }, "", input.assistant, false);
       if (!ctx) return;
       const settings = input.bulk ? bulkSettings(ctx.settings) : ctx.settings;
@@ -305,6 +334,28 @@ export function useChat({ getSettings, onUsage, confirmLarge }: ChatHookOptions)
     [begin, fail, finish, onUsage, patch, update]
   );
 
+  /**
+   * Regenerate / Retry: removes the answer and its prompt, then runs the same request again
+   * (same text, same document context as when it was first sent).
+   */
+  const retry = useCallback(
+    async (asstId: string) => {
+      if (abortRef.current) return;
+      const list = messagesRef.current;
+      const i = list.findIndex((m) => m.id === asstId);
+      if (i < 1 || list[i].role !== "assistant" || list[i - 1].role !== "user") return;
+      const user = list[i - 1];
+      const replay = replays.current.get(asstId);
+      const next = list.filter((_, k) => k !== i && k !== i - 1);
+      messagesRef.current = next; // begin() reads the history from the ref right away
+      update(() => next);
+      replays.current.delete(asstId);
+      if (replay) await replay();
+      else await send({ display: user.text, prompt: user.promptText ?? user.text, contextLabel: user.contextLabel });
+    },
+    [send, update]
+  );
+
   const markCommented = useCallback((id: string) => patch(id, { commented: true }), [patch]);
 
   const markApplied = useCallback((id: string, location: InsertLocation) => patch(id, { applied: location }), [patch]);
@@ -312,8 +363,9 @@ export function useChat({ getSettings, onUsage, confirmLarge }: ChatHookOptions)
   const clear = useCallback(() => {
     abortRef.current?.abort();
     clearChat(docIdRef.current);
+    replays.current.clear();
     update(() => []);
   }, [update]);
 
-  return { messages, busy, send, runAction, runGrammar, runTask, markApplied, markCommented, stop, clear };
+  return { messages, busy, send, runAction, runGrammar, runTask, retry, markApplied, markCommented, stop, clear };
 }

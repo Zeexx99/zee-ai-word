@@ -16,6 +16,7 @@ import {
 import { LANGUAGES, TONES, type SummaryStyle, type ToneId } from "../services/prompts";
 import type { CustomAction } from "../services/settingsService";
 import { TEMPLATES, type ReportTemplate } from "../services/templates";
+import { sortByUse, type UseCounts } from "../qol/recent";
 
 export interface QuickActionHandlers {
   onRewrite: () => void;
@@ -35,8 +36,22 @@ export interface QuickActionHandlers {
   onTemplate: (t: ReportTemplate) => void;
 }
 
-export function QuickActions(p: QuickActionHandlers & { disabled?: boolean; preferredLanguage: string; customActions: CustomAction[] }) {
-  const languages = [p.preferredLanguage, ...LANGUAGES.filter((l) => l !== p.preferredLanguage)];
+/** Keys used to count how often each menu item is used (most used float to the top). */
+export const useKey = {
+  tone: (id: string) => `tone:${id}`,
+  translate: (lang: string) => `translate:${lang}`,
+  custom: (id: string) => `custom:${id}`,
+  template: (id: string) => `template:${id}`,
+};
+
+export function QuickActions(
+  p: QuickActionHandlers & { disabled?: boolean; preferredLanguage: string; customActions: CustomAction[]; useCounts: UseCounts }
+) {
+  const c = p.useCounts;
+  const languages = [p.preferredLanguage, ...sortByUse(LANGUAGES.filter((l) => l !== p.preferredLanguage), useKey.translate, c)];
+  const tones = sortByUse(TONES, (t) => useKey.tone(t.id), c);
+  const templates = sortByUse(TEMPLATES, (t) => useKey.template(t.id), c);
+  const customActions = sortByUse(p.customActions, (a) => useKey.custom(a.id), c);
   return (
     <Toolbar className="zee-quick" size="small" aria-label="Quick actions">
       <Tooltip content="Rewrite & polish the selection" relationship="label">
@@ -60,7 +75,7 @@ export function QuickActions(p: QuickActionHandlers & { disabled?: boolean; pref
         <MenuPopover>
           <MenuList>
             <MenuGroupHeader>Rewrite the selection as…</MenuGroupHeader>
-            {TONES.map((t) => (
+            {tones.map((t) => (
               <MenuItem key={t.id} onClick={() => p.onTone(t.id)}>
                 {t.label}
               </MenuItem>
@@ -135,9 +150,9 @@ export function QuickActions(p: QuickActionHandlers & { disabled?: boolean; pref
         </MenuTrigger>
         <MenuPopover className="zee-lang-popover">
           <MenuList>
-            <MenuGroupHeader>My quick actions</MenuGroupHeader>
-            {p.customActions.length === 0 && <MenuItem disabled>No custom actions yet</MenuItem>}
-            {p.customActions.map((a) => (
+            <MenuGroupHeader>My quick actions – most used first</MenuGroupHeader>
+            {customActions.length === 0 && <MenuItem disabled>No custom actions yet</MenuItem>}
+            {customActions.map((a) => (
               <MenuItem
                 key={a.id}
                 title={a.instruction}
@@ -216,8 +231,8 @@ export function QuickActions(p: QuickActionHandlers & { disabled?: boolean; pref
         </MenuTrigger>
         <MenuPopover className="zee-lang-popover">
           <MenuList>
-            <MenuGroupHeader>Report templates</MenuGroupHeader>
-            {TEMPLATES.map((t) => (
+            <MenuGroupHeader>Report templates – most used first</MenuGroupHeader>
+            {templates.map((t) => (
               <MenuItem key={t.id} title={t.description} onClick={() => p.onTemplate(t)}>
                 {t.name}
               </MenuItem>

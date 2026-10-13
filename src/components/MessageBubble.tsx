@@ -21,7 +21,6 @@ import {
   Comment16Regular,
   Copy16Regular,
   DocumentArrowDown16Regular,
-  ErrorCircle16Regular,
   ArrowEnter16Regular,
 } from "@fluentui/react-icons";
 import type { ChatMessage } from "../hooks/useChat";
@@ -31,6 +30,7 @@ import { copyText, openExternal, useInsertActions } from "./insertActions";
 import { modelLabel } from "../services/settingsService";
 import { LOCATION_LABELS, toClipboardText, type InsertLocation } from "../services/wordService";
 import { DiffView } from "./DiffView";
+import { ErrorBubble, RegenerateButton, UserMessageTools } from "../qol/MessageTools";
 
 const rehypePlugins: Options["rehypePlugins"] = [[rehypeHighlight, { languages: common, detect: false }]];
 const remarkPlugins: Options["remarkPlugins"] = [remarkGfm];
@@ -363,19 +363,12 @@ function MessageBubbleImpl({ message }: { message: ChatMessage }) {
       <div className="zee-msg zee-msg-user">
         <div className="zee-bubble">{message.text}</div>
         {message.contextLabel && <div className="zee-chip">📎 {message.contextLabel}</div>}
+        <UserMessageTools text={message.text} />
       </div>
     );
   }
 
-  if (message.status === "error") {
-    return (
-      <div className="zee-msg zee-msg-assistant">
-        <div className="zee-bubble zee-bubble-error">
-          <ErrorCircle16Regular /> <span>{message.text}</span>
-        </div>
-      </div>
-    );
-  }
+  if (message.status === "error") return <ErrorBubble message={message} />;
 
   const done = message.status === "done";
   const isEdit = done && message.original !== undefined && message.defaultLocation === "replace";
@@ -437,6 +430,8 @@ function MessageBubbleImpl({ message }: { message: ChatMessage }) {
               {formatTokens(message.usage.promptTokens)} in · {formatTokens(message.usage.outputTokens)} out
             </span>
           )}
+          <span className="zee-spacer" />
+          <RegenerateButton message={message} />
         </div>
       )}
     </div>

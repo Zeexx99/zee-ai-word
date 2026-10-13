@@ -6,7 +6,8 @@
  * Undo finds that control and either deletes it (pure insertions) or puts the original text back
  * (edits / replacements). Comments are undone by id. The stack lives in memory only; when the pane
  * reloads, leftover hidden controls are unwrapped (their text stays) so documents never accumulate
- * Zee AI markers.
+ * Zee AI markers – except around edits made with Track Changes ("zeeai-t…"): those stay until the
+ * revisions are accepted or rejected, so "Accept / Reject Zee AI's changes" can find them later.
  */
 import { markdownToHtml, markdownToPlain, plainToHtml } from "../utils/mdToHtml";
 import { alignmentFor, detectDirection, hasRtl, inspectParagraphXml, setParagraphDirectionXml } from "../utils/direction";
@@ -24,6 +25,8 @@ export const LOCATION_LABELS: Record<InsertLocation, string> = {
 };
 
 const TAG_PREFIX = "zeeai-";
+/** Markers around tracked edits keep this prefix (TAG_PREFIX + "t…") until accepted / rejected. */
+const TRACKED_PREFIX = TAG_PREFIX + "t";
 const MAX_UNDO = 25;
 const MAX_OOXML_CHARS = 5_000_000;
 
@@ -35,8 +38,8 @@ export function isWordAvailable(): boolean {
   }
 }
 
-/** WordApi requirement-set check (1.3: ranges & intersections, 1.4: comments & Track Changes). */
-export function supportsWordApi(version: "1.3" | "1.4"): boolean {
+/** WordApi requirement-set check (1.3: ranges & intersections, 1.4: comments & Track Changes, 1.6: accept / reject revisions). */
+export function supportsWordApi(version: "1.3" | "1.4" | "1.6"): boolean {
   try {
     return isWordAvailable() && Office.context.requirements.isSetSupported("WordApi", version);
   } catch {
@@ -116,6 +119,52 @@ export async function selectParagraph(n: number): Promise<void> {
   });
 }
 
+/**
+ * Selects paragraphs `start`..`end` (1-based, as numbered by getDocumentParagraphs) – from the start of
+ * the first to the end of the last one's text (its paragraph mark stays outside, so a replacement keeps
+ * the paragraph's style). Returns the selected text.
+ */
+export async function selectParagraphRange(start: number, end: number = start): Promise<string> {
+  requireWord();
+  return Word.run(async (ctx) => {
+    const paras = ctx.document.body.paragraphs;
+    paras.load("items");
+    await ctx.sync();
+    const a = paras.items[start - 1];
+    const b = paras.items[end - 1];
+    if (!a || !b) throw new Error("Those paragraphs no longer exist – the document changed. Send the request again.");
+    const range = start === end ? a.getRange(Word.RangeLocation.content) : a.getRange(Word.RangeLocation.start).expandTo(b.getRange(Word.RangeLocation.content));
+    range.select(Word.SelectionMode.select);
+    range.load("text");
+    await ctx.sync();
+    return normalizeWordText(range.text ?? "");
+  });
+}
+
+/**
+ * Puts the cursor in a new, empty paragraph right after paragraph `n` (so inserted text becomes its own
+ * paragraph(s)). If paragraph `n` no longer has `expectText` (the document changed), the paragraph with
+ * that text is used instead.
+ */
+export async function placeCursorAfterParagraph(n: number, expectText?: string): Promise<void> {
+  requireWord();
+  await Word.run(async (ctx) => {
+    const paras = ctx.document.body.paragraphs;
+    paras.load("items/text");
+    await ctx.sync();
+    const norm = (t: string) => normalizeWordText(t).replace(/\s+/g, " ").trim();
+    let p = paras.items[n - 1];
+    if (expectText && (!p || norm(p.text ?? "") !== norm(expectText))) {
+      p = paras.items.find((x) => norm(x.text ?? "") === norm(expectText)) ?? p;
+    }
+    if (!p) throw new Error("That paragraph no longer exists – the document changed. Put the cursor where the text should go and use “Insert after cursor”.");
+    const np = p.insertParagraph("", Word.InsertLocation.after);
+    if (supportsWordApi("1.3")) np.styleBuiltIn = Word.BuiltInStyleName.normal;
+    np.getRange(Word.RangeLocation.start).select();
+    await ctx.sync();
+  });
+}
+
 /** Font used at the end of the document (for "Append to end"). */
 async function getEndFont(ctx: Word.RequestContext): Promise<{ name: string | null; size: number | null }> {
   const last = ctx.document.body.paragraphs.getLast();
@@ -188,7 +237,7 @@ function pushUndo(entry: UndoEntry) {
   undoStack.push(entry);
   if (undoStack.length > MAX_UNDO) {
     const dropped = undoStack.splice(0, undoStack.length - MAX_UNDO);
-    unwrap(dropped.filter((e) => e.kind !== "comments").map((e) => TAG_PREFIX + e.id)).catch(() => undefined);
+    unwrap(untrackedTags(dropped)).catch(() => undefined);
   }
   notify();
 }
@@ -199,25 +248,48 @@ export function onUndoChange(l: UndoListener): () => void {
   return () => listeners.delete(l);
 }
 
-/** Remove Zee AI's hidden wrappers but keep their text. */
-async function unwrap(tags: string[] | "all"): Promise<void> {
-  if (!isWordAvailable() || (tags !== "all" && !tags.length)) return;
+/** Remove Zee AI's hidden wrappers but keep their text. "untracked" = all except markers around tracked edits. */
+async function unwrap(tags: string[] | "all" | "untracked"): Promise<void> {
+  if (!isWordAvailable() || (Array.isArray(tags) && !tags.length)) return;
   await Word.run(async (ctx) => {
     const ccs = ctx.document.contentControls;
     ccs.load("items/tag");
     await ctx.sync();
     for (const cc of ccs.items) {
       if (!cc.tag?.startsWith(TAG_PREFIX)) continue;
-      if (tags === "all" || tags.includes(cc.tag)) cc.delete(true);
+      if (tags === "all" || (tags === "untracked" ? !cc.tag.startsWith(TRACKED_PREFIX) : tags.includes(cc.tag))) cc.delete(true);
     }
     await ctx.sync();
   });
 }
 
-/** Called on start-up: markers from an earlier session can't be undone any more. */
+/** Tags of undo entries whose markers may be removed (tracked edits keep theirs for accept / reject). */
+const untrackedTags = (entries: UndoEntry[]) => entries.filter((e) => e.kind !== "comments" && !(TAG_PREFIX + e.id).startsWith(TRACKED_PREFIX)).map((e) => TAG_PREFIX + e.id);
+
+/**
+ * Called on start-up: markers from an earlier session can't be undone any more. Markers around tracked
+ * edits stay while they still contain revisions (so they can be accepted / rejected from Zee AI).
+ */
 export async function cleanupOrphanMarkers(): Promise<void> {
   try {
-    await unwrap("all");
+    await unwrap("untracked");
+    if (!supportsWordApi("1.6")) return;
+    await Word.run(async (ctx) => {
+      const ccs = ctx.document.contentControls;
+      ccs.load("items/tag");
+      await ctx.sync();
+      const tracked = ccs.items.filter((cc) => cc.tag?.startsWith(TRACKED_PREFIX));
+      const changes = tracked.map((cc) => {
+        const t = cc.getRange(Word.RangeLocation.whole).getTrackedChanges();
+        t.load("items");
+        return t;
+      });
+      await ctx.sync();
+      tracked.forEach((cc, i) => {
+        if (!changes[i].items.length) cc.delete(true); // accepted / rejected in Word's Review tab
+      });
+      await ctx.sync();
+    });
   } catch {
     /* read-only document, protected content… – harmless */
   }
@@ -225,10 +297,72 @@ export async function cleanupOrphanMarkers(): Promise<void> {
 
 /** Forget the undo history (keeps all inserted text and comments). */
 export async function clearUndoHistory(): Promise<void> {
-  const tags = undoStack.filter((e) => e.kind !== "comments").map((e) => TAG_PREFIX + e.id);
+  const tags = untrackedTags(undoStack);
   undoStack.length = 0;
   notify();
   await unwrap(tags).catch(() => undefined);
+}
+
+/* ------------------------------------------------------------------ Zee AI's tracked changes */
+
+/** Revisions inside Zee AI's markers (edits made with Track Changes on). 0 when not supported. */
+export async function countZeeRevisions(): Promise<number> {
+  if (!supportsWordApi("1.6")) return 0;
+  return Word.run(async (ctx) => {
+    const ccs = ctx.document.contentControls;
+    ccs.load("items/tag");
+    await ctx.sync();
+    const lists = ccs.items
+      .filter((cc) => cc.tag?.startsWith(TRACKED_PREFIX))
+      .map((cc) => {
+        const t = cc.getRange(Word.RangeLocation.whole).getTrackedChanges();
+        t.load("items");
+        return t;
+      });
+    if (!lists.length) return 0;
+    await ctx.sync();
+    return lists.reduce((n, t) => n + t.items.length, 0);
+  });
+}
+
+/**
+ * Accepts or rejects only the revisions Zee AI made (inside its markers) – the user's own tracked
+ * changes elsewhere are not touched. The markers are removed afterwards (text stays).
+ */
+export async function resolveZeeRevisions(accept: boolean): Promise<{ changes: number; edits: number }> {
+  requireWord();
+  if (!supportsWordApi("1.6")) throw new Error("Accepting or rejecting revisions from an add-in needs Word for Microsoft 365 (WordApi 1.6). Use Word's Review tab instead.");
+  const done: string[] = [];
+  let changes = 0;
+  await Word.run(async (ctx) => {
+    const ccs = ctx.document.contentControls;
+    ccs.load("items/tag");
+    await ctx.sync();
+    const mine = ccs.items.filter((cc) => cc.tag?.startsWith(TRACKED_PREFIX));
+    const lists = mine.map((cc) => {
+      const t = cc.getRange(Word.RangeLocation.whole).getTrackedChanges();
+      t.load("items");
+      return t;
+    });
+    await ctx.sync();
+    lists.forEach((t) => {
+      changes += t.items.length;
+      if (!t.items.length) return;
+      if (accept) t.acceptAll();
+      else t.rejectAll();
+    });
+    await ctx.sync();
+    mine.forEach((cc) => {
+      done.push(cc.tag);
+      cc.delete(true);
+    });
+    await ctx.sync();
+  });
+  // Those steps can't be undone with ↶ any more (their markers are gone).
+  const before = undoStack.length;
+  for (let i = undoStack.length - 1; i >= 0; i--) if (done.includes(TAG_PREFIX + undoStack[i].id)) undoStack.splice(i, 1);
+  if (undoStack.length !== before) notify();
+  return { changes, edits: done.length };
 }
 
 export async function undoLast(): Promise<string> {
@@ -427,6 +561,8 @@ export interface InsertResult {
 }
 
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+/** Marker id: tracked edits get a "t" prefix so their markers survive until accepted / rejected. */
+const markId = (track: boolean) => (track && supportsWordApi("1.4") ? "t" : "") + uid();
 
 function wrap(target: Word.Range | Word.Paragraph, id: string): boolean {
   try {
@@ -586,7 +722,7 @@ export async function fixDirection(ctx: Word.RequestContext, target: Word.Range 
 
 export async function insertContent(req: InsertRequest): Promise<InsertResult> {
   requireWord();
-  const id = uid();
+  const id = markId(!!req.trackChanges);
   const content = req.content.replace(/\r\n?/g, "\n");
   if (!content.trim()) throw new Error("There is no text to insert.");
 
@@ -673,14 +809,32 @@ export async function insertContent(req: InsertRequest): Promise<InsertResult> {
     }
     const plainAsHtml = auto && req.format !== "markdown" && ownParagraphs && hasRtl(content);
 
+    // A tracked replacement is done inside a marker that wraps the old text first, so the deleted and
+    // the inserted revisions both end up inside it (needed for "Accept / Reject Zee AI's changes").
+    let pre: Word.ContentControl | null = null;
+    if (replacing && track && supportsWordApi("1.4")) {
+      try {
+        pre = sel.insertContentControl();
+        pre.tag = TAG_PREFIX + id;
+        pre.title = "Zee AI";
+        pre.appearance = Word.ContentControlAppearance.hidden;
+        await ctx.sync();
+      } catch {
+        pre = null; // e.g. the selection crosses a table edge – replace without the outer marker
+      }
+    }
+
     const r = await withTracking(ctx, track, async () => {
       let inserted: Word.Range | Word.Paragraph;
       if (req.format === "markdown" || plainAsHtml) {
         const htmlOpts = { fontFamily: font.name ?? undefined, fontSizePt: font.size ?? undefined, autoDirection: auto, arabicFont: arabicFont || undefined };
         const html = req.format === "markdown" ? markdownToHtml(content, htmlOpts) : plainToHtml(content, htmlOpts);
-        if (req.location === "end") inserted = ctx.document.body.insertHtml(html, Word.InsertLocation.end);
+        if (pre) inserted = pre.insertHtml(html, Word.InsertLocation.replace);
+        else if (req.location === "end") inserted = ctx.document.body.insertHtml(html, Word.InsertLocation.end);
         else if (req.location === "after") inserted = sel.insertHtml(html, sel.isEmpty ? Word.InsertLocation.replace : Word.InsertLocation.after);
         else inserted = sel.insertHtml(html, Word.InsertLocation.replace);
+      } else if (pre) {
+        inserted = pre.insertText(content, Word.InsertLocation.replace);
       } else if (req.location === "end") {
         // Start on a new paragraph at the end of the document.
         inserted = ctx.document.body.insertParagraph(content, Word.InsertLocation.end);
@@ -697,7 +851,7 @@ export async function insertContent(req: InsertRequest): Promise<InsertResult> {
 
     // Wrap for undo. Some ranges (e.g. inside equations or locked content controls) can't be wrapped:
     // the text is still inserted, only Zee AI's undo is unavailable (Word's Ctrl+Z still works).
-    state.undoable = wrap(inserted, id);
+    state.undoable = pre ? true : wrap(inserted, id);
     try {
       await ctx.sync();
     } catch {
@@ -864,7 +1018,7 @@ export async function getSelectedTable(): Promise<TableInfo | null> {
 /** Writes only the changed cells of the selected table (cell formatting stays). Undoable. */
 export async function writeTableCells(after: string[][], label: string, trackChanges: boolean): Promise<{ changed: number; tracked: boolean }> {
   requireWord();
-  const id = uid();
+  const id = markId(trackChanges);
   let changed = 0;
   let tracked = false;
   let before: string[][] = [];
@@ -976,7 +1130,7 @@ export async function setPictureAltText(text: string, label: string): Promise<vo
 /** Inserts a caption paragraph (Word's Caption style) directly below the selected picture (undoable). */
 export async function insertPictureCaption(text: string, label: string, trackChanges: boolean): Promise<void> {
   requireWord();
-  const id = uid();
+  const id = markId(trackChanges);
   let undoable = false;
   await Word.run(async (ctx) => {
     const pics = ctx.document.getSelection().inlinePictures;

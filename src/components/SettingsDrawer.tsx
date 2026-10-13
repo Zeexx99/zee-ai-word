@@ -22,7 +22,9 @@ import {
   Textarea,
 } from "@fluentui/react-components";
 import { ArrowSync16Regular, Dismiss24Regular, Eye20Regular, EyeOff20Regular, Person16Regular } from "@fluentui/react-icons";
-import { DEFAULT_MODELS, DEFAULT_PROTECTED_TERMS, modelHint, modelLabel, type AuthMode, type DocContext, type ThemeMode, type ZeeSettings } from "../services/settingsService";
+import { DEFAULT_MODELS, DEFAULT_PROTECTED_TERMS, DEFAULT_SETTINGS, modelHint, modelLabel, type AuthMode, type DocContext, type ThemeMode, type ZeeSettings } from "../services/settingsService";
+import { loadPrompts, savePrompts } from "../services/promptStore";
+import { BackupSection, UsageSection } from "../qol/BackupSection";
 import { getGoogleSession, signInWithGoogle, signOutGoogle, type GoogleSession } from "../services/authService";
 import { listModels, testConnection } from "../services/geminiService";
 import { LANGUAGES } from "../services/prompts";
@@ -44,6 +46,8 @@ interface Props {
   /** Scroll to this section when the drawer opens. */
   focus?: "actions" | null;
   onChange: (patch: Partial<ZeeSettings>) => void;
+  /** Settings from an export file (Backup & move). */
+  onImport: (patch: Partial<ZeeSettings>) => void;
   onClose: () => void;
 }
 
@@ -52,6 +56,7 @@ type Status = { intent: "success" | "error" | "info"; text: string } | null;
 const CONTEXTS: Array<{ value: DocContext; label: string }> = [
   { value: "selection", label: "Selected text (recommended)" },
   { value: "document", label: "Whole document" },
+  { value: "general", label: "General – Zee AI finds the relevant part" },
   { value: "none", label: "Nothing – chat only" },
 ];
 
@@ -66,7 +71,7 @@ function minutesLeft(s: GoogleSession | null): number {
   return s ? Math.max(0, Math.round((s.expiresAt - Date.now()) / 60000)) : 0;
 }
 
-export function SettingsDrawer({ open, settings, usage, undoDepth, onClearUndo, focus, onChange, onClose }: Props) {
+export function SettingsDrawer({ open, settings, usage, undoDepth, onClearUndo, focus, onChange, onImport, onClose }: Props) {
   const actionsRef = useRef<HTMLElement>(null);
   useEffect(() => {
     if (open && focus === "actions") window.setTimeout(() => actionsRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 250);
@@ -564,36 +569,14 @@ export function SettingsDrawer({ open, settings, usage, undoDepth, onClearUndo, 
 
         <Divider />
 
-        <section>
-          <h3>Usage this session</h3>
-          <div className="zee-usage">
-            <div>
-              <strong>{usage.requests}</strong>
-              <span>requests</span>
-            </div>
-            <div>
-              <strong>{usage.promptTokens.toLocaleString()}</strong>
-              <span>prompt tokens</span>
-            </div>
-            <div>
-              <strong>{usage.outputTokens.toLocaleString()}</strong>
-              <span>completion tokens</span>
-            </div>
-          </div>
-          <p className="zee-muted">
-            Current model: {modelLabel(settings.model)}. Quotas and billing are managed in Google AI Studio (API key) or the Google Cloud console (Vertex AI).
-          </p>
-        </section>
+        <UsageSection session={usage} prices={{ inPerM: settings.priceInPerM, outPerM: settings.priceOutPerM }} onPrices={(p) => onChange({ priceInPerM: p.inPerM, priceOutPerM: p.outPerM })} />
+        <p className="zee-muted">
+          Current model: {modelLabel(settings.model)}. Quotas and billing are managed in Google AI Studio (API key) or the Google Cloud console (Vertex AI).
+        </p>
 
         <Divider />
 
-        <section>
-          <h3>About</h3>
-          <p className="zee-muted">
-            Zee AI for Word {__ZEE_VERSION__} · built {new Date(__ZEE_BUILD__).toLocaleString()}
-          </p>
-          <p className="zee-muted">If this date is older than your last update, Word is still showing a cached copy – close the pane and open it again.</p>
-        </section>
+        <BackupSection settings={settings} defaults={DEFAULT_SETTINGS} onImport={onImport} loadPrompts={loadPrompts} savePrompts={savePrompts} />
       </DrawerBody>
     </OverlayDrawer>
   );

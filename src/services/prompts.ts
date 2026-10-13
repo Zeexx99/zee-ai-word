@@ -355,3 +355,66 @@ ${outline}
 ${notes}
 --- NOTES END ---`;
 }
+
+/* ---------------------------------------------------------------- "General" scope: find the right part of the document */
+
+export const LOCATE_SYSTEM_PROMPT = `You are Zee AI's navigator inside Microsoft Word. You receive a user request and the document with numbered paragraphs ("[P12] text"). Decide what the user wants and WHERE in the document it applies. You do not write the new text yourself.
+
+Choose one action:
+- "edit": the user wants existing text changed (rewrite, shorten, fix, translate, update numbers or units, reformat, delete a sentence, change tone…). Give the smallest contiguous paragraph range "start".."end" that fully covers the text to change. A heading only counts when the request is about the heading itself.
+- "insert": the user wants NEW text added (a new section, paragraph, sentence, conclusion, table, list…). Give "insertAfter": the paragraph the new text should follow (0 = at the very end of the document).
+- "answer": the user asks a question, wants an explanation, summary, review or a list from the document WITHOUT changing it. Give "paragraphs": the paragraph numbers that hold the information (most relevant first, at most 40).
+- "none": the request can't be tied to the document, or the text it refers to doesn't exist in it.
+
+Rules: use only paragraph numbers that appear in the document. Match by meaning, headings and section names, not only exact words (the request may be in another language than the document). When a request names a section ("the conclusion", "section 3", "the pump table"), cover that whole section but nothing beyond it. "reason" = one short sentence for the user (e.g. "The Conclusion section, ¶41–44").`;
+
+export const LOCATE_SCHEMA: Record<string, unknown> = {
+  type: "OBJECT",
+  properties: {
+    action: { type: "STRING" },
+    start: { type: "INTEGER" },
+    end: { type: "INTEGER" },
+    insertAfter: { type: "INTEGER" },
+    paragraphs: { type: "ARRAY", items: { type: "INTEGER" } },
+    reason: { type: "STRING" },
+  },
+  required: ["action", "reason"],
+};
+
+export function locatePrompt(request: string, numbered: string): string {
+  return `USER REQUEST:
+"""
+${request}
+"""
+
+DOCUMENT (paragraphs numbered [P#]):
+--- DOCUMENT START ---
+${numbered}
+--- DOCUMENT END ---`;
+}
+
+/** Edit a passage that Zee AI located (result replaces the passage). */
+export function generalEditPrompt(request: string, passage: string): string {
+  return `Apply this request to the passage below and return the full passage with the change made. Change only what the request asks for; everything else stays word for word.
+
+REQUEST: ${request.trim()}
+
+${wrap(passage)}`;
+}
+
+/** Write new text that will be inserted after `anchor` (the paragraph Zee AI picked). */
+export function generalInsertPrompt(request: string, anchor: string, context: string): string {
+  return `Write the new text the user asks for. It will be inserted directly after the paragraph marked ANCHOR, so it must fit there (same language, terminology and tone as the document). Output only the new text.
+
+REQUEST: ${request.trim()}
+
+ANCHOR (the new text goes right after this):
+"""
+${anchor}
+"""
+
+SURROUNDING DOCUMENT TEXT (for context – do not repeat it):
+--- CONTEXT START ---
+${context}
+--- CONTEXT END ---`;
+}

@@ -38,6 +38,20 @@ function clientLog(): Plugin {
   };
 }
 
+/**
+ * Writes build.json next to the page: { version, build }. The pane compares it with its own build to
+ * show "A newer version is online", and update-all.bat polls it to know when GitHub Pages is live.
+ */
+function buildInfo(info: { version: string; build: string }): Plugin {
+  return {
+    name: "zee-build-info",
+    apply: "build",
+    generateBundle() {
+      this.emitFile({ type: "asset", fileName: "build.json", source: JSON.stringify(info) });
+    },
+  };
+}
+
 // Office requires the task pane to be served over HTTPS.
 // office-addin-dev-certs creates and trusts a localhost certificate (setup.bat / `npm run certs`).
 // Port 3200: 3000 is often taken by other dev servers and 3100 is used by the Zee AI Excel add-in,
@@ -48,14 +62,15 @@ export default defineConfig(async ({ command }) => {
   // No certificates for `vite build` (CI / GitHub Pages) or for Vitest (which uses "serve" internally).
   const https = command === "serve" && !process.env.VITEST ? await getHttpsServerOptions() : undefined;
   const pkg = JSON.parse(readFileSync(new URL("./package.json", import.meta.url), "utf8")) as { version: string };
+  const build = new Date().toISOString();
   return {
     // Relative base: the same build works on https://localhost:3200/ and https://<user>.github.io/zee-ai-word/
     base: "./",
-    plugins: [react(), clientLog()],
+    plugins: [react(), clientLog(), buildInfo({ version: pkg.version, build })],
     // Shown in Settings → About, so you can tell which build Word actually loaded.
     define: {
       __ZEE_VERSION__: JSON.stringify(pkg.version),
-      __ZEE_BUILD__: JSON.stringify(new Date().toISOString()),
+      __ZEE_BUILD__: JSON.stringify(build),
     },
     server: { port: PORT, strictPort: true, https },
     preview: { port: PORT, strictPort: true, https },

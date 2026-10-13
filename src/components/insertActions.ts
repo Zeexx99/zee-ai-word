@@ -16,6 +16,14 @@ export interface InsertActions {
   goToParagraph: (n: number) => void;
   /** True inside Word (insert buttons are disabled in the browser preview). */
   canInsert: boolean;
+  /** Run an answer again (Regenerate / Retry). */
+  retry: (assistantId: string) => void;
+  /** Put a prompt back into the chat box to edit and resend it. */
+  editPrompt: (text: string) => void;
+  /** Copy a diagnostics report for a failed answer. */
+  copyDiagnostics: (message: ChatMessage) => void;
+  /** A request is running (Regenerate is disabled meanwhile). */
+  busy: boolean;
 }
 
 export const InsertActionsContext = createContext<InsertActions | null>(null);

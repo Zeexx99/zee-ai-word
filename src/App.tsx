@@ -25,8 +25,11 @@ import {
   Add20Regular,
   ArrowDownload20Regular,
   ArrowUndo20Regular,
+  CheckmarkCircle20Regular,
   Copy20Regular,
+  DismissCircle20Regular,
   DocumentAdd20Regular,
+  DocumentCheckmark20Regular,
   DocumentEdit20Filled,
   DocumentEdit20Regular,
   Settings20Regular,
@@ -38,7 +41,7 @@ import { darkTheme, lightTheme, useAutoDark, useBodyThemeClass } from "./theme";
 import { useChat, type ChatMessage } from "./hooks/useChat";
 import { ChatFeed } from "./components/ChatFeed";
 import { ChatInput } from "./components/ChatInput";
-import { QuickActions } from "./components/QuickActions";
+import { QuickActions, useKey } from "./components/QuickActions";
 // Imported eagerly (never lazy-loaded): a separate chunk breaks when Office holds a cached page from an older deploy.
 import { SettingsDrawer } from "./components/SettingsDrawer";
 import {
@@ -55,9 +58,12 @@ import { InsertActionsContext, copyText, type InsertActions } from "./components
 
 import {
   allCustomActions,
+  bulkSettings,
   isConfigured,
   loadSettings,
   modelLabel,
+  protectedTermList,
+  sanitizeSettings,
   saveSettings,
   type CustomAction,
   type DocContext,
@@ -84,7 +90,11 @@ import {
   isWordAvailable,
   onSelectionChange,
   onUndoChange,
+  countZeeRevisions,
+  placeCursorAfterParagraph,
+  resolveZeeRevisions,
   selectParagraph,
+  selectParagraphRange,
   supportsWordApi,
   undoLast,
   type InsertFormat,
@@ -126,14 +136,25 @@ import {
   translatePrompt,
   bilingualPrompt,
   BILINGUAL_SYSTEM_PROMPT,
+  LOCATE_SCHEMA,
+  LOCATE_SYSTEM_PROMPT,
+  generalEditPrompt,
+  generalInsertPrompt,
+  locatePrompt,
+  withGlossary,
   type SummaryStyle,
   type ToneId,
 } from "./services/prompts";
-import { generateFromParts, generateJson, generateText, type GeminiPart, type Usage } from "./services/geminiService";
+import { estimateTokens, generateFromParts, generateJson, generateText, GeminiError, type GeminiPart, type Usage } from "./services/geminiService";
 import { getDocTitle } from "./services/chatStore";
 import { countWords, preserveEdges, shorten, truncateMiddle } from "./utils/text";
 import { looksLikeMarkdown, markdownToPlain } from "./utils/mdToHtml";
 import { chunkParagraphs, numberParagraphs } from "./utils/chunks";
+import { normalizeLocate, paraLabel, paraListLabel, relevantExcerpt, type LocatePlan, type LocateResult } from "./utils/locate";
+import { UpdateBanners, useUpdates } from "./qol/UpdateBanners";
+import { recordUsage, usageForDay } from "./qol/usageLog";
+import { buildDiagnostics } from "./qol/diagnostics";
+import { bumpUse, loadUseCounts } from "./qol/recent";
 
 export interface UsageTotals {
   requests: number;
@@ -211,18 +232,30 @@ export default function App() {
 
   /* ------------------------------------------------------------ usage */
   const [usage, setUsage] = useState<UsageTotals>({ requests: 0, promptTokens: 0, outputTokens: 0 });
-  const addUsage = useCallback(
-    (u: Usage) => setUsage((p) => ({ requests: p.requests + 1, promptTokens: p.promptTokens + u.promptTokens, outputTokens: p.outputTokens + u.outputTokens })),
-    []
-  );
+  const [today, setToday] = useState(() => usageForDay());
+  const addUsage = useCallback((u: Usage) => {
+    setUsage((p) => ({ requests: p.requests + 1, promptTokens: p.promptTokens + u.promptTokens, outputTokens: p.outputTokens + u.outputTokens }));
+    setToday(recordUsage(u));
+  }, []);
+  const prices = useMemo(() => ({ inPerM: settings.priceInPerM, outPerM: settings.priceOutPerM }), [settings.priceInPerM, settings.priceOutPerM]);
+
+  /* ------------------------------------------------------------ updates, usage counts */
+  const updates = useUpdates();
+  const [useCounts, setUseCounts] = useState(() => loadUseCounts());
+  const used = useCallback((key: string) => setUseCounts(bumpUse(key)), []);
 
   /* ------------------------------------------------------------ selection tracking */
   const [selectionWords, setSelectionWords] = useState(0);
+  /** × on the selection chip: leave the selection out of the next message (resets when the selection changes). */
+  const [ignoreSelection, setIgnoreSelection] = useState(false);
   useEffect(() => {
     if (!inWord) return;
     const refresh = () =>
       getSelectionInfo()
-        .then((s) => setSelectionWords(s.isEmpty ? 0 : countWords(s.text)))
+        .then((s) => {
+          setSelectionWords(s.isEmpty ? 0 : countWords(s.text));
+          setIgnoreSelection(false);
+        })
         .catch(() => setSelectionWords(0));
     refresh();
     return onSelectionChange(refresh);
@@ -239,10 +272,38 @@ export default function App() {
       }),
     []
   );
-  // Markers left by an earlier session can't be undone any more – unwrap them (text stays).
+  /* ------------------------------------------------------------ Zee AI's tracked changes */
+  const [zeeRevisions, setZeeRevisions] = useState(0);
+  const canResolve = inWord && supportsWordApi("1.6");
+  const refreshRevisions = useCallback(() => {
+    if (!canResolve) return;
+    countZeeRevisions()
+      .then(setZeeRevisions)
+      .catch(() => undefined);
+  }, [canResolve]);
+  // Markers left by an earlier session can't be undone any more – unwrap them (text stays; markers
+  // around tracked edits stay until those revisions are accepted or rejected).
   useEffect(() => {
-    if (inWord) cleanupOrphanMarkers();
-  }, [inWord]);
+    if (inWord) cleanupOrphanMarkers().then(refreshRevisions);
+  }, [inWord, refreshRevisions]);
+  useEffect(() => {
+    if (settings.trackChanges || zeeRevisions) refreshRevisions();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [undoDepth, undoLabel]);
+  const resolveRevisions = async (accept: boolean) => {
+    try {
+      const r = await resolveZeeRevisions(accept);
+      setZeeRevisions(0);
+      toast(
+        "success",
+        accept ? "Zee AI's changes accepted" : "Zee AI's changes rejected",
+        `${r.changes} revision${r.changes === 1 ? "" : "s"} in ${r.edits} edit${r.edits === 1 ? "" : "s"}. Your own tracked changes were not touched.`
+      );
+    } catch (e) {
+      toastError(e);
+      refreshRevisions();
+    }
+  };
   const undo = async () => {
     try {
       const label = await undoLast();
@@ -281,7 +342,26 @@ export default function App() {
     [askConfirm]
   );
 
-  const { messages, busy, send, runAction, runGrammar, runTask, markApplied, markCommented, stop, clear } = useChat({ getSettings, onUsage: addUsage, confirmLarge });
+  const { messages, busy, send, runAction, runGrammar, runTask, retry, markApplied, markCommented, stop, clear } = useChat({ getSettings, onUsage: addUsage, confirmLarge });
+
+  /* ------------------------------------------------------------ "General" scope: locating */
+  const [locating, setLocating] = useState<string | null>(null);
+  const locateAbort = useRef<AbortController | null>(null);
+  const working = busy || !!locating;
+  const stopAll = useCallback(() => {
+    locateAbort.current?.abort();
+    stop();
+  }, [stop]);
+  const abortable = useRef(false);
+  abortable.current = busy;
+  // Esc stops a running answer from anywhere in the pane.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && (abortable.current || locateAbort.current)) stopAll();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [stopAll]);
 
   const [settingsOpen, setSettingsOpen] = useState(false);
   const ensureConfigured = useCallback(() => {
@@ -327,13 +407,160 @@ export default function App() {
     [docTitle, inWord, toast]
   );
 
+  /**
+   * "General" scope: a cheap first call finds where in the document the request applies, then Zee AI
+   * selects that part and edits it (diff + Replace), writes new text for that spot, or answers from
+   * just those paragraphs.
+   */
+  const runGeneral = useCallback(
+    async (text: string) => {
+      if (!inWord) {
+        await send({ display: text, prompt: text });
+        return;
+      }
+      let paras: string[];
+      try {
+        paras = await getDocumentParagraphs();
+      } catch (e) {
+        toastError(e);
+        return;
+      }
+      if (!paras.some((p) => p.trim())) {
+        // Empty document: just write what was asked at the cursor.
+        await runAction({
+          kind: "draft",
+          title: "Draft",
+          display: text,
+          prompt: draftPrompt(text, { length: "medium", tone: "match" }),
+          system: DRAFT_SYSTEM_PROMPT,
+          contextLabel: "General · empty document",
+          format: "markdown",
+          defaultLocation: "after",
+        });
+        return;
+      }
+      const s = settingsRef.current;
+      const numbered = truncateMiddle(numberParagraphs(paras), Math.max(s.maxContextChars, 120_000));
+      const tokens = estimateTokens(numbered.text + text + LOCATE_SYSTEM_PROMPT);
+      if (s.costGuardTokens > 0 && tokens > s.costGuardTokens && !(await confirmLarge(tokens))) return;
+
+      const abort = new AbortController();
+      locateAbort.current = abort;
+      setLocating("Finding the relevant part of the document…");
+      let plan: LocatePlan;
+      try {
+        const { data, usage: u } = await generateJson<LocateResult>({
+          settings: bulkSettings(s),
+          prompt: locatePrompt(text, numbered.text),
+          systemInstruction: withGlossary(LOCATE_SYSTEM_PROMPT, protectedTermList(s)),
+          schema: LOCATE_SCHEMA,
+          signal: abort.signal,
+        });
+        if (u) addUsage(u);
+        plan = normalizeLocate(data, paras);
+      } catch (e) {
+        if (abort.signal.aborted || (e instanceof GeminiError && e.kind === "aborted")) return;
+        toast("warning", "Couldn't find the spot automatically", `${(e as Error).message} Answering from the whole document instead.`);
+        plan = { action: "none", reason: "" };
+      } finally {
+        setLocating(null);
+        locateAbort.current = null;
+      }
+      const why = plan.reason ? ` – ${plan.reason}` : "";
+
+      if (plan.action === "edit") {
+        const words = countWords(paras.slice(plan.start - 1, plan.end).join(" "));
+        if (words * 6 > MAX_EDIT_CHARS) {
+          toast(
+            "warning",
+            "That part is too long to edit in one go",
+            `${paraLabel(plan.start, plan.end)} has about ${words.toLocaleString()} words. Ask for one section at a time, or select less and use “Selected text”.`
+          );
+          return;
+        }
+        let selected: string;
+        try {
+          selected = await selectParagraphRange(plan.start, plan.end);
+        } catch (e) {
+          toastError(e);
+          return;
+        }
+        if (!selected.trim()) {
+          toast("info", "Nothing to edit there", "The located paragraphs are empty – try describing the part more precisely.");
+          return;
+        }
+        await runAction({
+          kind: "action",
+          title: `Edit ${paraLabel(plan.start, plan.end)}`,
+          display: text,
+          prompt: generalEditPrompt(text, selected),
+          system: EDIT_SYSTEM_PROMPT,
+          original: selected,
+          contextLabel: `Found ${paraLabel(plan.start, plan.end)} · ${countWords(selected).toLocaleString()} words${why}`,
+          format: "plain",
+          defaultLocation: "replace",
+          extra: { paraRange: [plan.start, plan.end] },
+        });
+        return;
+      }
+
+      if (plan.action === "insert") {
+        let anchor = plan.after;
+        if (anchor > 0) {
+          try {
+            await selectParagraph(anchor); // show where the new text will go
+          } catch {
+            anchor = 0;
+          }
+        }
+        const last = paras.reduce((k, p, i) => (p.trim() ? i + 1 : k), 1);
+        const around = relevantExcerpt(paras, [anchor || last], 3, 12_000).text;
+        await runAction({
+          kind: "draft",
+          title: anchor ? `New text after ${paraLabel(anchor)}` : "New text at the end",
+          display: text,
+          prompt: generalInsertPrompt(text, paras[(anchor || last) - 1] ?? "", around),
+          system: DRAFT_SYSTEM_PROMPT,
+          contextLabel: `${anchor ? `Goes after ${paraLabel(anchor)}` : "Goes at the end"}${why}`,
+          format: "markdown",
+          defaultLocation: anchor ? "after" : "end",
+          extra: anchor ? { anchorParagraph: anchor, anchorText: paras[anchor - 1] } : undefined,
+        });
+        return;
+      }
+
+      if (plan.action === "answer") {
+        const ex = relevantExcerpt(paras, plan.paragraphs, 1, Math.min(Math.max(s.maxContextChars, 8000), 40_000));
+        await send({
+          display: text,
+          prompt: `${text}\n\n[Relevant parts of the document "${docTitle}" found by Zee AI – paragraphs numbered [P#]; "…" marks skipped text]\n"""\n${ex.text}\n"""`,
+          contextLabel: `Found ${paraListLabel(ex.used)}${why}`,
+          citations: true,
+        });
+        return;
+      }
+
+      // No specific part: answer with the whole document as context.
+      const doc = await docContext("document");
+      await send({ display: text, prompt: text + doc.suffix, contextLabel: doc.label ? `${doc.label} · no specific part found` : undefined, citations: doc.citations });
+    },
+    [addUsage, confirmLarge, docContext, docTitle, inWord, runAction, send, toast, toastError]
+  );
+
   const sendChat = useCallback(
     async (text: string) => {
       if (!ensureConfigured()) return;
-      const ctx = await docContext(settingsRef.current.docContext);
+      const mode = settingsRef.current.docContext;
+      if (mode === "general") {
+        await runGeneral(text);
+        return;
+      }
+      const skip = mode === "selection" && ignoreSelection;
+      setIgnoreSelection(false);
+      const ctx = await docContext(skip ? "none" : mode);
       await send({ display: text, prompt: text + ctx.suffix, contextLabel: ctx.label, citations: ctx.citations });
     },
-    [docContext, ensureConfigured, send]
+    [docContext, ensureConfigured, ignoreSelection, runGeneral, send]
   );
 
   /* ------------------------------------------------------------ selection actions */
@@ -394,9 +621,10 @@ export default function App() {
   );
 
   const onRewrite = () => editAction("Rewrite & polish", rewritePrompt);
-  const onTone = (tone: ToneId) => editAction(`Tone: ${TONES.find((t) => t.id === tone)?.label ?? tone}`, (t) => tonePrompt(t, tone));
+  const onTone = (tone: ToneId) => (used(useKey.tone(tone)), editAction(`Tone: ${TONES.find((t) => t.id === tone)?.label ?? tone}`, (t) => tonePrompt(t, tone)));
   const onLength = (dir: "expand" | "shorten") => editAction(dir === "expand" ? "Expand" : "Shorten", (t) => lengthPrompt(t, dir));
   const onTranslate = (language: string) => {
+    used(useKey.translate(language));
     if (language !== settingsRef.current.translateTo) updateSettings({ translateTo: language });
     return editAction(`Translate to ${language}`, (t) => translatePrompt(t, language));
   };
@@ -848,6 +1076,7 @@ export default function App() {
   const [templatePick, setTemplatePick] = useState<ReportTemplate | null>(null);
   const onTemplateRun = async (c: TemplateChoice) => {
     setTemplatePick(null);
+    used(useKey.template(c.template.id));
     if (c.fillFromSelection) {
       if (!ensureConfigured()) return;
       const notes = await requireSelection();
@@ -876,6 +1105,7 @@ export default function App() {
   const [settingsFocus, setSettingsFocus] = useState<"actions" | null>(null);
   const onCustom = async (a: CustomAction) => {
     if (!ensureConfigured()) return;
+    used(useKey.custom(a.id));
     if (a.mode === "replace") {
       await editAction(a.name, (t) => customActionPrompt(a.instruction, t));
       return;
@@ -905,6 +1135,17 @@ export default function App() {
           format = "plain";
         }
         if (format === "plain" && m.format !== "plain") content = markdownToPlain(content);
+
+        // "General" scope: put the selection / cursor back on the located part first.
+        if (location === "replace" && m.paraRange && m.original !== undefined) {
+          // If the paragraphs changed meanwhile, the check below shows the difference and asks first.
+          const again = await selectParagraphRange(m.paraRange[0], m.paraRange[1]).catch(() => "");
+          if (!again) {
+            toast("info", "The document changed", "Those paragraphs no longer exist – select the text to replace and click Replace again, or Regenerate.");
+            return;
+          }
+        }
+        if (location === "after" && m.anchorParagraph) await placeCursorAfterParagraph(m.anchorParagraph, m.anchorText);
 
         if (location === "replace") {
           const sel = await getSelectionInfo();
@@ -963,6 +1204,31 @@ export default function App() {
     [askConfirm, markApplied, toast, toastError]
   );
 
+  const copyDiagnostics = useCallback(
+    async (m: ChatMessage) => {
+      const s = settingsRef.current;
+      const report = buildDiagnostics({
+        error: m.text,
+        kind: m.errorKind,
+        model: m.model ?? s.model,
+        authMode: s.authMode,
+        extra: {
+          "Request": m.title ?? "chat",
+          "Document context": s.docContext,
+          "Track Changes": String(s.trackChanges),
+          "WordApi 1.3 / 1.4 / 1.6": inWord ? ["1.3", "1.4", "1.6"].map((v) => (supportsWordApi(v as "1.3" | "1.4" | "1.6") ? "yes" : "no")).join(" / ") : "not in Word",
+        },
+      });
+      if (await copyText(report)) toast("success", "Diagnostics copied", "Paste them to Claude or IT. No keys or document text are included.");
+      else toast("error", "Couldn't copy", report.slice(0, 300));
+    },
+    [inWord, toast]
+  );
+
+  /** Edit & resend: put a prompt back into the chat box. */
+  const [inject, setInject] = useState<{ text: string; n: number } | null>(null);
+  const editPrompt = useCallback((text: string) => setInject({ text, n: Date.now() }), []);
+
   const comment = useCallback(
     async (m: ChatMessage) => {
       const issues = m.issues ?? [];
@@ -1000,8 +1266,8 @@ export default function App() {
   );
 
   const insertActions = useMemo<InsertActions>(
-    () => ({ insert, comment, goToParagraph, applyTable, applyPicture, canInsert: inWord }),
-    [insert, comment, goToParagraph, applyTable, applyPicture, inWord]
+    () => ({ insert, comment, goToParagraph, applyTable, applyPicture, canInsert: inWord, retry: (id) => void retry(id), editPrompt, copyDiagnostics, busy: working }),
+    [insert, comment, goToParagraph, applyTable, applyPicture, inWord, retry, editPrompt, copyDiagnostics, working]
   );
 
   /* ------------------------------------------------------------ ribbon / right-click / keyboard commands */
@@ -1041,7 +1307,6 @@ export default function App() {
   };
 
   /* ------------------------------------------------------------ render */
-  const sessionTokens = usage.promptTokens + usage.outputTokens;
   return (
     // Layout classes live on an inner div, NOT on FluentProvider: Fluent copies the provider's className
     // onto its portal containers (toasts, dialogs), and a full-height background class there covered the
@@ -1094,6 +1359,27 @@ export default function App() {
                 }}
               />
             </Tooltip>
+            {zeeRevisions > 0 && (
+              <Menu>
+                <MenuTrigger disableButtonEnhancement>
+                  <Tooltip content={`${zeeRevisions} tracked change${zeeRevisions === 1 ? "" : "s"} by Zee AI – accept or reject them (your own revisions stay)`} relationship="label">
+                    <Button appearance="subtle" size="small" className="zee-track-on" icon={<DocumentCheckmark20Regular />}>
+                      {zeeRevisions}
+                    </Button>
+                  </Tooltip>
+                </MenuTrigger>
+                <MenuPopover>
+                  <MenuList>
+                    <MenuItem icon={<CheckmarkCircle20Regular />} onClick={() => resolveRevisions(true)}>
+                      Accept all Zee AI changes ({zeeRevisions})
+                    </MenuItem>
+                    <MenuItem icon={<DismissCircle20Regular />} onClick={() => resolveRevisions(false)}>
+                      Reject all Zee AI changes
+                    </MenuItem>
+                  </MenuList>
+                </MenuPopover>
+              </Menu>
+            )}
             <Tooltip content={dark ? "Switch to light mode" : "Switch to dark mode"} relationship="label">
               <Button appearance="subtle" size="small" icon={dark ? <WeatherSunny20Regular /> : <WeatherMoon20Regular />} onClick={() => updateSettings({ theme: dark ? "light" : "dark" })} />
             </Tooltip>
@@ -1122,6 +1408,7 @@ export default function App() {
             </Tooltip>
           </header>
 
+          <UpdateBanners newerVersion={updates.newerVersion} notes={updates.notes} onDismissNotes={updates.dismissNotes} />
           {!inWord && (
             <MessageBar intent="warning" className="zee-banner">
               <MessageBarBody>Preview mode – open Zee AI from Word to read and edit documents. Chat still works.</MessageBarBody>
@@ -1139,7 +1426,8 @@ export default function App() {
           )}
 
           <QuickActions
-            disabled={busy}
+            disabled={working}
+            useCounts={useCounts}
             preferredLanguage={settings.translateTo}
             onRewrite={onRewrite}
             onGrammar={onGrammar}
@@ -1165,13 +1453,18 @@ export default function App() {
           <ChatFeed messages={messages} onSuggestion={sendChat} />
 
           <ChatInput
-            busy={busy}
+            busy={working}
+            status={locating}
             docContext={settings.docContext}
             onDocContext={(v) => updateSettings({ docContext: v })}
             selectionLabel={inWord ? (selectionWords ? `${selectionWords.toLocaleString()} words selected` : null) : "preview"}
-            sessionTokens={sessionTokens}
+            ignoreSelection={ignoreSelection}
+            onIgnoreSelection={setIgnoreSelection}
+            today={today}
+            prices={prices}
+            inject={inject}
             onSend={sendChat}
-            onStop={stop}
+            onStop={stopAll}
           />
 
           {settingsOpen && (
@@ -1182,6 +1475,14 @@ export default function App() {
               undoDepth={undoDepth}
               onClearUndo={() => clearUndoHistory().then(() => toast("success", "Undo history cleared", "All inserted text stays in the document."))}
               focus={settingsFocus}
+              onImport={(patch) => {
+                setSettings((prev) => {
+                  const next = sanitizeSettings({ ...prev, ...patch });
+                  saveSettings(next);
+                  return next;
+                });
+                toast("success", "Settings imported", "Check Connection – the API key is only included when it was exported with it.");
+              }}
               onChange={updateSettings}
               onClose={() => {
                 setSettingsOpen(false);
