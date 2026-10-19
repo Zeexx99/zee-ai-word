@@ -22,7 +22,8 @@ import {
   Textarea,
 } from "@fluentui/react-components";
 import { ArrowSync16Regular, Dismiss24Regular, Eye20Regular, EyeOff20Regular, Person16Regular } from "@fluentui/react-icons";
-import { DEFAULT_MODELS, DEFAULT_PROTECTED_TERMS, DEFAULT_SETTINGS, modelHint, modelLabel, type AuthMode, type DocContext, type ThemeMode, type ZeeSettings } from "../services/settingsService";
+import { DEFAULT_MODELS, DEFAULT_PROTECTED_TERMS, DEFAULT_SETTINGS, modelHint, modelLabel, switchAuthMode, type AuthMode, type DocContext, type ThemeMode, type ZeeSettings } from "../services/settingsService";
+import { OTHER_PROVIDERS, providerName, providerOf } from "../shared/openaiCompat";
 import { loadPrompts, savePrompts } from "../services/promptStore";
 import { BackupSection, UsageSection } from "../qol/BackupSection";
 import { getGoogleSession, signInWithGoogle, signOutGoogle, type GoogleSession } from "../services/authService";
@@ -100,10 +101,18 @@ export function SettingsDrawer({ open, settings, usage, undoDepth, onClearUndo, 
     }
   }, [open]);
 
+  const other = settings.authMode === "openai";
+  const otherName = providerName(settings.otherBaseUrl);
+  const otherPreset = providerOf(settings.otherBaseUrl);
   const extraModels = useMemo(
     () => settings.fetchedModels.filter((id) => !DEFAULT_MODELS.some((m) => m.id === id)),
     [settings.fetchedModels]
   );
+  const otherModels = useMemo(() => {
+    const ids = [...settings.otherFetchedModels];
+    if (otherPreset?.model && !ids.includes(otherPreset.model)) ids.unshift(otherPreset.model);
+    return ids;
+  }, [settings.otherFetchedModels, otherPreset]);
   const signedIn = !!session && minutesLeft(session) > 0;
 
   const runTest = async () => {
@@ -111,7 +120,7 @@ export function SettingsDrawer({ open, settings, usage, undoDepth, onClearUndo, 
     setStatus(null);
     try {
       const r = await testConnection(settings);
-      if (r.models.length) onChange({ fetchedModels: r.models });
+      if (r.models.length) onChange(other ? { otherFetchedModels: r.models } : { fetchedModels: r.models });
       setStatus({ intent: "success", text: r.message });
     } catch (e) {
       setStatus({ intent: "error", text: (e as Error).message });
@@ -124,8 +133,8 @@ export function SettingsDrawer({ open, settings, usage, undoDepth, onClearUndo, 
     setRefreshing(true);
     try {
       const ids = await listModels(settings);
-      onChange({ fetchedModels: ids });
-      setStatus({ intent: "info", text: `Loaded ${ids.length} models from your account.` });
+      onChange(other ? { otherFetchedModels: ids } : { fetchedModels: ids });
+      setStatus({ intent: "info", text: `Loaded ${ids.length} models from ${other ? otherName : "your account"}.` });
     } catch (e) {
       setStatus({ intent: "error", text: (e as Error).message });
     } finally {
@@ -162,8 +171,9 @@ export function SettingsDrawer({ open, settings, usage, undoDepth, onClearUndo, 
       <DrawerBody className="zee-settings">
         <section>
           <h3>Connection</h3>
-          <RadioGroup value={settings.authMode} onChange={(_, d) => onChange({ authMode: d.value as AuthMode })}>
+          <RadioGroup value={settings.authMode} onChange={(_, d) => onChange(switchAuthMode(settings, d.value as AuthMode))}>
             <Radio value="apiKey" label="Gemini API key (bring your own key)" />
+            <Radio value="openai" label="Other API key (Groq, OpenRouter, OpenAI, Mistral…)" />
             <Radio value="google" label="Google sign-in (Vertex AI, your Cloud project quota)" />
             <Radio value="proxy" label="Team proxy (key kept on your server)" />
           </RadioGroup>
@@ -176,6 +186,68 @@ export function SettingsDrawer({ open, settings, usage, undoDepth, onClearUndo, 
               <Field label="Team access token" hint="The shared secret your admin configured on the proxy.">
                 <Input type="password" value={settings.proxyToken} onChange={(_, d) => onChange({ proxyToken: d.value })} autoComplete="off" />
               </Field>
+            </div>
+          ) : other ? (
+            <div className="zee-form">
+              <Field label="Provider" hint="Any service with an OpenAI-compatible API works. Pick Custom to type its base URL.">
+                <Dropdown
+                  value={otherPreset?.label ?? "Custom"}
+                  selectedOptions={[otherPreset?.id ?? "custom"]}
+                  onOptionSelect={(_, d) => {
+                    const p = OTHER_PROVIDERS.find((x) => x.id === d.optionValue);
+                    if (!p) return;
+                    onChange({ otherBaseUrl: p.baseUrl, otherFetchedModels: [], ...(p.model ? { model: p.model } : {}) });
+                  }}
+                >
+                  {OTHER_PROVIDERS.map((p) => (
+                    <Option key={p.id} value={p.id}>
+                      {p.label}
+                    </Option>
+                  ))}
+                  <Option value="custom">Custom</Option>
+                </Dropdown>
+              </Field>
+              <Field label="Base URL" hint="Ends in /v1 for most providers. Requests go to {base URL}/chat/completions.">
+                <Input value={settings.otherBaseUrl} onChange={(_, d) => onChange({ otherBaseUrl: d.value })} placeholder="https://api.groq.com/openai/v1" />
+              </Field>
+              <Field
+                label={`${otherName} API key`}
+                hint={
+                  <>
+                    {otherPreset ? (
+                      <>
+                        Create one at{" "}
+                        <Link inline onClick={() => openExternal(otherPreset.keyUrl)}>
+                          {otherPreset.keyUrl.replace(/^https:\/\//, "")}
+                        </Link>
+                        .{" "}
+                      </>
+                    ) : null}
+                    Stored only on this computer (in this add-in's browser storage) – never in the document.
+                  </>
+                }
+              >
+                <Input
+                  type={showKey ? "text" : "password"}
+                  value={settings.otherApiKey}
+                  onChange={(_, d) => onChange({ otherApiKey: d.value })}
+                  placeholder={otherPreset?.id === "groq" ? "gsk_…" : "sk-…"}
+                  autoComplete="off"
+                  contentAfter={
+                    <Button
+                      size="small"
+                      appearance="transparent"
+                      aria-label={showKey ? "Hide key" : "Show key"}
+                      icon={showKey ? <EyeOff20Regular /> : <Eye20Regular />}
+                      onClick={() => setShowKey(!showKey)}
+                    />
+                  }
+                />
+              </Field>
+              <p className="zee-muted">
+                Chat, editing, proofreading and the quick actions work with this key. Reading PDFs is Gemini-only, and the cheaper bulk model is skipped (everything uses
+                the model below).
+              </p>
             </div>
           ) : settings.authMode === "apiKey" ? (
             <Field
@@ -259,7 +331,10 @@ export function SettingsDrawer({ open, settings, usage, undoDepth, onClearUndo, 
 
         <section>
           <h3>Model</h3>
-          <Field label="Gemini model" hint={modelHint(settings.model) ?? "Custom model ID"}>
+          <Field
+            label={other ? `${otherName} model` : "Gemini model"}
+            hint={other ? "Model ID exactly as your provider lists it. Click ⟳ to load the models your key can use." : (modelHint(settings.model) ?? "Custom model ID")}
+          >
             <div className="zee-row">
               <Combobox
                 className="zee-grow"
@@ -275,21 +350,39 @@ export function SettingsDrawer({ open, settings, usage, undoDepth, onClearUndo, 
                   }
                 }}
               >
-                <OptionGroup label="Recommended">
-                  {DEFAULT_MODELS.map((m) => (
-                    <Option key={m.id} value={m.id} text={m.id}>
-                      {m.label}
+                {other ? (
+                  otherModels.length > 0 ? (
+                    <OptionGroup label={`From ${otherName}`}>
+                      {otherModels.map((id) => (
+                        <Option key={id} value={id}>
+                          {id}
+                        </Option>
+                      ))}
+                    </OptionGroup>
+                  ) : (
+                    <Option value={settings.model || " "} disabled>
+                      Click ⟳ to load models
                     </Option>
-                  ))}
-                </OptionGroup>
-                {extraModels.length > 0 && (
-                  <OptionGroup label="From your account">
-                    {extraModels.map((id) => (
-                      <Option key={id} value={id}>
-                        {id}
-                      </Option>
-                    ))}
-                  </OptionGroup>
+                  )
+                ) : (
+                  <>
+                    <OptionGroup label="Recommended">
+                      {DEFAULT_MODELS.map((m) => (
+                        <Option key={m.id} value={m.id} text={m.id}>
+                          {m.label}
+                        </Option>
+                      ))}
+                    </OptionGroup>
+                    {extraModels.length > 0 && (
+                      <OptionGroup label="From your account">
+                        {extraModels.map((id) => (
+                          <Option key={id} value={id}>
+                            {id}
+                          </Option>
+                        ))}
+                      </OptionGroup>
+                    )}
+                  </>
                 )}
               </Combobox>
               {settings.authMode !== "google" && (
@@ -297,7 +390,10 @@ export function SettingsDrawer({ open, settings, usage, undoDepth, onClearUndo, 
                   aria-label="Refresh model list"
                   title="Load the models available to your key or proxy"
                   icon={refreshing ? <Spinner size="tiny" /> : <ArrowSync16Regular />}
-                  disabled={refreshing || (settings.authMode === "apiKey" ? !settings.apiKey.trim() : !settings.proxyUrl.trim())}
+                  disabled={
+                    refreshing ||
+                    (settings.authMode === "apiKey" ? !settings.apiKey.trim() : other ? !settings.otherApiKey.trim() : !settings.proxyUrl.trim())
+                  }
                   onClick={refreshModels}
                 />
               )}

@@ -8,8 +8,10 @@
  */
 
 import type { TeamConfig } from "../utils/teamConfig";
+import { DEFAULT_OTHER_BASE_URL, DEFAULT_OTHER_MODEL } from "../shared/openaiCompat";
 
-export type AuthMode = "apiKey" | "google" | "proxy";
+/** "openai" = Other API key: any OpenAI-compatible provider (Groq, OpenRouter, OpenAI, Mistral…). */
+export type AuthMode = "apiKey" | "openai" | "google" | "proxy";
 
 /** "auto" follows the Office theme (or the OS colour scheme outside Office). */
 export type ThemeMode = "auto" | "light" | "dark";
@@ -72,6 +74,15 @@ export interface ZeeSettings {
   model: string;
   /** Extra model IDs fetched from the API with "Refresh" / "Test connection". */
   fetchedModels: string[];
+  /** Other API key (OpenAI-compatible provider). */
+  otherBaseUrl: string;
+  otherApiKey: string;
+  /** Model remembered for the other provider while Gemini is selected. */
+  otherModel: string;
+  /** Model IDs fetched from the other provider with "Refresh" / "Test connection". */
+  otherFetchedModels: string[];
+  /** Gemini model remembered while the other provider is selected. */
+  geminiModel: string;
   googleClientId: string;
   gcpProjectId: string;
   gcpLocation: string;
@@ -122,6 +133,11 @@ export const DEFAULT_SETTINGS: ZeeSettings = {
   apiKey: "",
   model: DEFAULT_MODELS[0].id,
   fetchedModels: [],
+  otherBaseUrl: DEFAULT_OTHER_BASE_URL,
+  otherApiKey: "",
+  otherModel: DEFAULT_OTHER_MODEL,
+  otherFetchedModels: [],
+  geminiModel: DEFAULT_MODELS[0].id,
   googleClientId: "",
   gcpProjectId: "",
   gcpLocation: "global",
@@ -154,10 +170,16 @@ export const STORAGE_KEY = "zeeai.word.settings.v1";
 export function sanitizeSettings(parsed: Partial<ZeeSettings> | null | undefined): ZeeSettings {
   const merged: ZeeSettings = { ...DEFAULT_SETTINGS, ...(parsed ?? {}) };
   if (!["auto", "light", "dark"].includes(merged.theme)) merged.theme = "auto";
-  if (!["apiKey", "google", "proxy"].includes(merged.authMode)) merged.authMode = "apiKey";
+  if (!["apiKey", "openai", "google", "proxy"].includes(merged.authMode)) merged.authMode = "apiKey";
   if (!["none", "selection", "document", "general"].includes(merged.docContext)) merged.docContext = "selection";
   if (!Array.isArray(merged.fetchedModels)) merged.fetchedModels = [];
-  if (typeof merged.model !== "string" || !merged.model.trim()) merged.model = DEFAULT_SETTINGS.model;
+  if (typeof merged.otherBaseUrl !== "string" || !merged.otherBaseUrl.trim()) merged.otherBaseUrl = DEFAULT_OTHER_BASE_URL;
+  if (typeof merged.otherApiKey !== "string") merged.otherApiKey = "";
+  if (typeof merged.otherModel !== "string") merged.otherModel = DEFAULT_OTHER_MODEL;
+  if (typeof merged.geminiModel !== "string" || !merged.geminiModel.trim()) merged.geminiModel = DEFAULT_SETTINGS.model;
+  if (!Array.isArray(merged.otherFetchedModels)) merged.otherFetchedModels = [];
+  if (typeof merged.model !== "string" || !merged.model.trim())
+    merged.model = merged.authMode === "openai" ? merged.otherModel.trim() || DEFAULT_OTHER_MODEL : DEFAULT_SETTINGS.model;
   if (!Number.isFinite(merged.costGuardTokens) || merged.costGuardTokens < 0) merged.costGuardTokens = DEFAULT_SETTINGS.costGuardTokens;
   if (!Number.isFinite(merged.maxContextChars) || merged.maxContextChars < 1000) merged.maxContextChars = DEFAULT_SETTINGS.maxContextChars;
   if (merged.temperature !== null && !Number.isFinite(merged.temperature)) merged.temperature = null;
@@ -205,8 +227,20 @@ export function modelHint(id: string): string | undefined {
   return DEFAULT_MODELS.find((m) => m.id === id)?.hint;
 }
 
+/**
+ * Settings patch for switching connection. Gemini and the other provider each keep their own model,
+ * so switching back and forth restores the model that was picked for that side.
+ */
+export function switchAuthMode(s: ZeeSettings, mode: AuthMode): Partial<ZeeSettings> {
+  if (mode === s.authMode) return {};
+  if (mode === "openai") return { authMode: mode, geminiModel: s.model, model: s.otherModel.trim() || DEFAULT_OTHER_MODEL };
+  if (s.authMode === "openai") return { authMode: mode, otherModel: s.model, model: s.geminiModel.trim() || DEFAULT_MODELS[0].id };
+  return { authMode: mode };
+}
+
 export function isConfigured(s: ZeeSettings): boolean {
   if (s.authMode === "apiKey") return s.apiKey.trim().length > 0;
+  if (s.authMode === "openai") return s.otherApiKey.trim().length > 0 && s.otherBaseUrl.trim().length > 0;
   if (s.authMode === "proxy") return s.proxyUrl.trim().length > 0;
   return s.googleClientId.trim().length > 0 && s.gcpProjectId.trim().length > 0;
 }
@@ -224,5 +258,6 @@ export function allCustomActions(s: Pick<ZeeSettings, "customActions" | "team">)
 
 /** Settings for whole-document passes: the cheaper bulk model when enabled. */
 export function bulkSettings(s: ZeeSettings): ZeeSettings {
-  return s.useBulkModel && s.bulkModel.trim() ? { ...s, model: s.bulkModel.trim() } : s;
+  // The bulk model is a Gemini model, so it is skipped with an Other API key.
+  return s.authMode !== "openai" && s.useBulkModel && s.bulkModel.trim() ? { ...s, model: s.bulkModel.trim() } : s;
 }
